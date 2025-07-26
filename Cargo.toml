@@ -1,0 +1,9 @@
+[package]
+name = "rlnc_benchmark"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reed-solomon-erasure = "6.0"
+rand = "0.9"
+rlnc = "0.7.0"
