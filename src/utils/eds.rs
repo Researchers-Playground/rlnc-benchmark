@@ -1,3 +1,7 @@
+use rayon::prelude::*;
+use reed_solomon_erasure::galois_8::ReedSolomon;
+use std::sync::Arc;
+
 pub fn create_matrix(block: &[u8], block_size: usize, k: usize) -> Vec<Vec<Vec<u8>>> {
     let share_size = block_size / (k * k);
     let mut original_matrix: Vec<Vec<Vec<u8>>> = Vec::new();
@@ -30,25 +34,42 @@ pub fn create_extended_matrix(
     k: usize,
 ) -> Vec<Vec<Vec<u8>>> {
     let share_size = block_size / (k * k);
-    let mut extended_matrix: Vec<Vec<Vec<u8>>> = Vec::new();
+    let zero_share = vec![0u8; share_size];
 
-    // Create 2k×2k matrix
-    for row in 0..2 * k {
-        let mut extended_row: Vec<Vec<u8>> = Vec::new();
-
-        for col in 0..2 * k {
-            if row < k && col < k {
-                // Quadrant 1: Original data
-                extended_row.push(original_matrix[row][col].clone());
-            } else {
-                // Quadrants 2, 3, 4: Parity data (will be filled)
-                extended_row.push(vec![0u8; share_size]);
-            }
-        }
-
+    let mut extended_matrix = Vec::with_capacity(2 * k);
+    for row in 0..k {
+        let mut extended_row = Vec::with_capacity(2 * k);
+        extended_row.extend_from_slice(&original_matrix[row]);
+        extended_row.extend(std::iter::repeat(zero_share.clone()).take(k));
         extended_matrix.push(extended_row);
     }
+    extended_matrix.extend(std::iter::repeat_with(|| vec![zero_share.clone(); 2 * k]).take(k));
 
     println!("Create extended {}x{} matrix successfully", 2 * k, 2 * k);
+    extended_matrix
+}
+
+pub fn extended_data_share(
+    original_matrix: &[Vec<Vec<u8>>],
+    block_size: usize,
+    k: usize,
+) -> Vec<Vec<Vec<u8>>> {
+    let mut extended_matrix = create_extended_matrix(&original_matrix, block_size, k);
+    let rs = Arc::new(ReedSolomon::new(k, k).unwrap());
+    for col in 0..k {
+        let mut column_shares = Vec::with_capacity(2 * k);
+        column_shares.extend(extended_matrix.iter().take(k).map(|row| row[col].clone()));
+        let share_size = block_size / (k * k);
+        let zero_share = vec![0u8; share_size];
+        column_shares.extend(std::iter::repeat(zero_share).take(k));
+        rs.encode(&mut column_shares).unwrap();
+
+        for (row_idx, share) in column_shares.into_iter().enumerate() {
+            extended_matrix[row_idx][col] = share;
+        }
+    }
+    extended_matrix.par_iter_mut().for_each(|row| {
+        rs.encode(row).unwrap();
+    });
     extended_matrix
 }

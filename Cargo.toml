@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 reed-solomon-erasure = "6.0"
 rand = "0.9"
-rlnc = "0.7.0"
+rlnc = { git = "https://github.com/perfogic/rlnc.git", branch = "main", features = ["parallel"] }
+rayon = "1.8"
