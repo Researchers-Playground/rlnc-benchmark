@@ -8,7 +8,7 @@ pub fn chunk_to_scalars(chunk: &[u8]) -> Result<Vec<Scalar>, String> {
     }
     let mut padded_chunk = chunk.to_vec();
     padded_chunk.resize(chunk.len() + padding_size, 0);
-    Ok(chunk
+    Ok(padded_chunk
         .chunks_exact(32)
         .map(|x| {
             let mut array = [0u8; 32];

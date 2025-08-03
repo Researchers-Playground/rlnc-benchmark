@@ -4,7 +4,7 @@ use rlnc::full::encoder::Encoder;
 use std::time::Instant;
 // network coding
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
-use rlnc_benchmark::commitments::pedersen::Committer;
+use rlnc_benchmark::commitments::bitwise::{gf256_combine_chunks, BitwiseCommitter};
 use utils::blocks::create_random_block;
 use utils::eds::{extended_data_share, FlatMatrix};
 mod utils;
@@ -47,7 +47,7 @@ fn main() {
 
     // <BEGIN: RLNC configuration>
     let num_shreds: usize = k;
-    let num_chunks = 64;
+    let num_chunks = 16;
     let shreds_size = extended_matrix.data().len() / num_shreds;
     let chunk_size = shreds_size / num_chunks;
     println!("Shreds size: {} bytes", shreds_size);
@@ -62,36 +62,30 @@ fn main() {
     let encode_start = Instant::now();
     let mut rng = rand::rng();
     let mut coded_block: Vec<Vec<u8>> = vec![];
-    // for i in 0..num_shreds {
-    let shred = shreds[0];
-    let encoder = Encoder::new(shred.to_vec(), num_chunks).unwrap();
-    println!("get_piece_count: {:?}", encoder.get_piece_count());
-    println!("get_piece_byte_len: {:?}", encoder.get_piece_byte_len());
-    println!(
-        "get_full_coded_piece_byte_len: {:?}",
-        encoder.get_full_coded_piece_byte_len()
-    );
-    let coded_piece = encoder.code(&mut rng);
-    coded_block.push(coded_piece.clone());
-    // }
+    let mut piece_byte_len = 0;
+    for i in 0..num_shreds {
+        let shred = shreds[i];
+        let encoder = Encoder::new(shred.to_vec(), num_chunks).unwrap();
+        piece_byte_len = encoder.get_piece_byte_len();
+        let coded_piece = encoder.code(&mut rng);
+        coded_block.push(coded_piece.clone());
+    }
     let encode_time = encode_start.elapsed();
     println!("📊 RLNC time for encoding: {:?}", encode_time);
     // <END: Create encoded block>
 
     // <BEGIN: Create commitment for each chunk>
-    let commiter = Committer::new(chunk_size);
+    let commiter = BitwiseCommitter::new(piece_byte_len);
     let commitment_start = Instant::now();
-    let chunks_: Vec<Vec<Vec<u8>>> = vec![pad_and_chunk(shreds[0], num_chunks, 0x81)];
+    let chunks_: Vec<Vec<Vec<u8>>> = shreds
+        .par_iter()
+        .map(|shred| pad_and_chunk(shred, num_chunks, 0x81))
+        .collect();
     let chunks_commitments: Vec<Vec<RistrettoPoint>> = chunks_
         .par_iter()
         .map(|chunk| {
-            chunk
-                .iter()
-                .map(|chunk| {
-                    let commitment = commiter.commit(chunk).unwrap();
-                    commitment
-                })
-                .collect::<Vec<RistrettoPoint>>()
+            // Use parallel batch commit for maximum performance
+            commiter.batch_commit_parallel(chunk)
         })
         .collect();
     let commitment_start = commitment_start.elapsed();
@@ -107,21 +101,21 @@ fn main() {
 
     // <BEGIN: Verify encoded block>
     let verify_start = Instant::now();
-    // for i in 0..coded_block.len() {
-    let commitment = commiter.commit(&coded_piece[num_chunks..]).unwrap();
-    let coding_vector = coded_piece[0..num_chunks].to_vec();
-    let coding_vector_in_scalar = coding_vector
-        .iter()
-        .map(|x| Scalar::from(*x))
-        .collect::<Vec<Scalar>>();
-    let calculated_commitment =
-        RistrettoPoint::multiscalar_mul(&coding_vector_in_scalar, &chunks_commitments[0]);
-    if calculated_commitment != commitment {
-        println!("❌ Verification failed for shred {}", 0);
-    } else {
-        println!("✅ Verification passed for shred {}", 0);
+    for i in 0..coded_block.len() {
+        let coded_piece = coded_block[i].clone();
+        let commitment = commiter.commit(&coded_piece[num_chunks..]);
+        let coding_vector = coded_piece[0..num_chunks].to_vec();
+
+        // Use the same approach as the test - combine chunks using GF256 then commit
+        let reconstructed = gf256_combine_chunks(&chunks_[i], &coding_vector);
+        let calculated_commitment = commiter.commit(&reconstructed);
+
+        if calculated_commitment != commitment {
+            println!("❌ Verification failed for shred {}", i);
+        } else {
+            println!("✅ Verification passed for shred {}", i);
+        }
     }
-    // }
     let verify_time = verify_start.elapsed();
     println!("📊 RLNC time for verification: {:?}", verify_time);
     // <END: Verify encoded block>

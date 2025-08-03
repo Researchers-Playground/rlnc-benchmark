@@ -357,8 +357,8 @@ dependencies = [
 
 [[package]]
 name = "rlnc"
-version = "0.8.0"
-source = "git+https://github.com/perfogic/rlnc.git?branch=main#08f9878188997cc4f1a903481d1493e4557a35c3"
+version = "0.8.1"
+source = "git+https://github.com/perfogic/rlnc.git?branch=main#affedaaa9ee8abfc63c26ff5fba119d92941e053"
 dependencies = [
  "rand",
  "rayon",
