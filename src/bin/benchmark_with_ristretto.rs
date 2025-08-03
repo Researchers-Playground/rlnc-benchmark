@@ -45,7 +45,7 @@ fn main() {
     // <END: RLNC configuration>
 
     // <BEGIN: RLNC create commitment one block>
-    let committer = Committer::new(num_chunks);
+    let committer = Committer::new(chunk_size);
     let shreds = block.chunks(chunk_size).collect::<Vec<_>>();
     let shreds_encoders = shreds
         .iter()

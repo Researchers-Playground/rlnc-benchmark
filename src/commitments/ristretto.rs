@@ -21,7 +21,11 @@ impl Committer {
 
     pub fn commit(&self, scalars: &[Scalar]) -> Result<RistrettoPoint, String> {
         if scalars.len() > self.generators.len() {
-            return Err("Chunk size is too large".to_string());
+            return Err(format!(
+                "Chunk size is too large, {} > {}",
+                scalars.len(),
+                self.generators.len()
+            ));
         }
         Ok(RistrettoPoint::multiscalar_mul(
             scalars,
