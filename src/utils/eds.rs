@@ -2,74 +2,140 @@ use rayon::prelude::*;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use std::sync::Arc;
 
-pub fn create_matrix(block: &[u8], block_size: usize, k: usize) -> Vec<Vec<Vec<u8>>> {
-    let share_size = block_size / (k * k);
-    let mut original_matrix: Vec<Vec<Vec<u8>>> = Vec::new();
-
-    for row in 0..k {
-        let mut row_shares: Vec<Vec<u8>> = Vec::new();
-        for col in 0..k {
-            let share_idx = row * k + col;
-            let start_idx = share_idx * share_size;
-            let end_idx = (start_idx + share_size).min(block_size);
-            let mut share_data = block[start_idx..end_idx].to_vec();
-            if share_data.len() < share_size {
-                share_data.extend_from_slice(&vec![0; share_size - share_data.len()]);
-            }
-            row_shares.push(share_data);
-        }
-        original_matrix.push(row_shares);
-    }
-
-    println!(
-        "Create {}x{} matrix successfully with share size {}",
-        k, k, share_size
-    );
-    original_matrix
+#[derive(Clone, Debug)]
+pub struct FlatMatrix {
+    data: Vec<u8>,
+    rows: usize,
+    cols: usize,
+    share_size: usize,
 }
 
-pub fn create_extended_matrix(
-    original_matrix: &[Vec<Vec<u8>>],
-    block_size: usize,
-    k: usize,
-) -> Vec<Vec<Vec<u8>>> {
-    let share_size = block_size / (k * k);
-    let zero_share = vec![0u8; share_size];
-
-    let mut extended_matrix = Vec::with_capacity(2 * k);
-    for row in 0..k {
-        let mut extended_row = Vec::with_capacity(2 * k);
-        extended_row.extend_from_slice(&original_matrix[row]);
-        extended_row.extend(std::iter::repeat(zero_share.clone()).take(k));
-        extended_matrix.push(extended_row);
+impl FlatMatrix {
+    pub fn new(block: &[u8], share_size: usize, k: usize) -> Self {
+        let total_size = k * k * share_size;
+        let mut data = block.to_vec();
+        if data.len() < total_size {
+            data.resize(total_size, 0);
+        }
+        data.truncate(total_size);
+        println!(
+            "Create {} x {} matrix successfully with share size {}",
+            k, k, share_size
+        );
+        Self {
+            data,
+            rows: k,
+            cols: k,
+            share_size,
+        }
     }
-    extended_matrix.extend(std::iter::repeat_with(|| vec![zero_share.clone(); 2 * k]).take(k));
 
-    println!("Create extended {}x{} matrix successfully", 2 * k, 2 * k);
+    /// Creates an empty matrix with specified dimensions (for extended matrices)
+    pub fn empty(rows: usize, cols: usize, share_size: usize) -> Self {
+        let total_size = rows * cols * share_size;
+        Self {
+            data: vec![0u8; total_size],
+            rows,
+            cols,
+            share_size,
+        }
+    }
+
+    pub fn get_share(&self, row: usize, col: usize) -> &[u8] {
+        let start_idx = (row * self.cols + col) * self.share_size;
+        &self.data[start_idx..start_idx + self.share_size]
+    }
+
+    pub fn get_share_mut(&mut self, row: usize, col: usize) -> &mut [u8] {
+        let start_idx = (row * self.cols + col) * self.share_size;
+        &mut self.data[start_idx..start_idx + self.share_size]
+    }
+
+    pub fn set_share(&mut self, row: usize, col: usize, share_data: &[u8]) {
+        let share = self.get_share_mut(row, col);
+        share.copy_from_slice(share_data);
+    }
+
+    pub fn get_row(&self, row: usize) -> Vec<Vec<u8>> {
+        (0..self.cols)
+            .map(|col| self.get_share(row, col).to_vec())
+            .collect()
+    }
+
+    pub fn get_column(&self, col: usize) -> Vec<Vec<u8>> {
+        (0..self.rows)
+            .map(|row| self.get_share(row, col).to_vec())
+            .collect()
+    }
+
+    pub fn set_row(&mut self, row: usize, row_data: &[Vec<u8>]) {
+        for (col, share_data) in row_data.iter().enumerate() {
+            self.set_share(row, col, share_data);
+        }
+    }
+
+    pub fn set_column(&mut self, col: usize, col_data: &[Vec<u8>]) {
+        for (row, share_data) in col_data.iter().enumerate() {
+            self.set_share(row, col, share_data);
+        }
+    }
+
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.rows, self.cols)
+    }
+
+    pub fn share_size(&self) -> usize {
+        self.share_size
+    }
+
+    pub fn data_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.data
+    }
+
+    pub fn data(&self) -> &Vec<u8> {
+        &self.data
+    }
+}
+
+pub fn create_extended_matrix(original_matrix: &FlatMatrix, k: usize) -> FlatMatrix {
+    let share_size = original_matrix.share_size();
+    let mut extended_matrix = FlatMatrix::empty(2 * k, 2 * k, share_size);
+    for row in 0..k {
+        for col in 0..k {
+            let share_data = original_matrix.get_share(row, col);
+            extended_matrix.set_share(row, col, share_data);
+        }
+    }
+    println!("Create extended {} x {} matrix successfully", 2 * k, 2 * k);
     extended_matrix
 }
 
-pub fn extended_data_share(
-    original_matrix: &[Vec<Vec<u8>>],
-    block_size: usize,
-    k: usize,
-) -> Vec<Vec<Vec<u8>>> {
-    let mut extended_matrix = create_extended_matrix(&original_matrix, block_size, k);
+pub fn extended_data_share(original_matrix: &FlatMatrix, k: usize) -> FlatMatrix {
+    let mut extended_matrix = create_extended_matrix(original_matrix, k);
     let rs = Arc::new(ReedSolomon::new(k, k).unwrap());
     for col in 0..k {
-        let mut column_shares = Vec::with_capacity(2 * k);
-        column_shares.extend(extended_matrix.iter().take(k).map(|row| row[col].clone()));
-        let share_size = block_size / (k * k);
-        let zero_share = vec![0u8; share_size];
-        column_shares.extend(std::iter::repeat(zero_share).take(k));
+        let mut column_shares = extended_matrix.get_column(col);
         rs.encode(&mut column_shares).unwrap();
-
-        for (row_idx, share) in column_shares.into_iter().enumerate() {
-            extended_matrix[row_idx][col] = share;
-        }
+        extended_matrix.set_column(col, &column_shares);
     }
-    extended_matrix.par_iter_mut().for_each(|row| {
-        rs.encode(row).unwrap();
-    });
+    let share_size = extended_matrix.share_size();
+    let cols_count = 2 * k;
+    extended_matrix
+        .data_mut()
+        .par_chunks_mut(cols_count * share_size)
+        .enumerate()
+        .for_each(|(_row_idx, row_data)| {
+            let mut row_shares: Vec<Vec<u8>> = (0..cols_count)
+                .map(|col| {
+                    let start = col * share_size;
+                    row_data[start..start + share_size].to_vec()
+                })
+                .collect();
+            rs.encode(&mut row_shares).unwrap();
+            for (col, share) in row_shares.iter().enumerate() {
+                let start = col * share_size;
+                row_data[start..start + share_size].copy_from_slice(share);
+            }
+        });
     extended_matrix
 }

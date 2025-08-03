@@ -8,3 +8,6 @@ reed-solomon-erasure = "6.0"
 rand = "0.9"
 rlnc = { git = "https://github.com/perfogic/rlnc.git", branch = "main", features = ["parallel"] }
 rayon = "1.8"
+curve25519-dalek = "4.0.0"
+thiserror = "1.0"
+sha2 = "0.10"
