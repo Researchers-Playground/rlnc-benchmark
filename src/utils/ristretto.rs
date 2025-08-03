@@ -2,7 +2,6 @@ use curve25519_dalek::scalar::Scalar;
 use rand::Rng;
 
 pub fn chunk_to_scalars(chunk: &[u8]) -> Result<Vec<Scalar>, String> {
-    // fix cho tôi hàm này, nếu ko chia hết cho 32 thì padding
     let mut padding_size = 0;
     if chunk.len() % 32 != 0 {
         padding_size = 32 - chunk.len() % 32;
