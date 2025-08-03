@@ -356,15 +356,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlnc"
-version = "0.8.1"
-source = "git+https://github.com/perfogic/rlnc.git?branch=main#affedaaa9ee8abfc63c26ff5fba119d92941e053"
-dependencies = [
- "rand",
- "rayon",
-]
-
-[[package]]
 name = "rlnc_benchmark"
 version = "0.1.0"
 dependencies = [
@@ -372,7 +363,6 @@ dependencies = [
  "rand",
  "rayon",
  "reed-solomon-erasure",
- "rlnc",
  "sha2",
  "thiserror",
 ]
