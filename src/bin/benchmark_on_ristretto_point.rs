@@ -1,5 +1,5 @@
 use curve25519_dalek::RistrettoPoint;
-use rlnc_benchmark::commitments::ristretto::Committer;
+use rlnc_benchmark::commitments::pedersen::ristretto::Committer;
 use rlnc_benchmark::utils::bytes::bytes_to_human_readable;
 use std::time::Instant;
 // network coding

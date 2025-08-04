@@ -1,1 +1,1 @@
-pub mod ristretto;
+pub mod pedersen;

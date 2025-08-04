@@ -48,6 +48,9 @@ impl Echelon {
 
     // is_full returns if the echelon form is square.
     pub fn is_full(&self) -> bool {
+        if self.coefficients.is_empty() {
+            return false;
+        }
         self.coefficients.len() == self.coefficients[0].len()
     }
 
