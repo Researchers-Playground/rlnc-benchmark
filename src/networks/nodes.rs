@@ -122,14 +122,17 @@ impl<'a> Node<'a> {
             data: message.chunk.data,
             coefficients: message.chunk.coefficients,
         };
-        self.decoder
-            .decode(&coded_packet, &message.commitments)
-            .map_err(|e| match e {
-                RLNCError::PieceNotUseful => ReceiveError::LinearlyDependentChunk,
-                RLNCError::InvalidData(msg) => ReceiveError::InvalidMessage(msg),
-                _ => ReceiveError::NetworkError("Decoding failed".to_string()),
-            })?;
-
+        match self.decoder.decode(&coded_packet, &message.commitments) {
+            Ok(_) => {}
+            Err(RLNCError::DecodingNotComplete) => {
+                println!("Node {}: Decoding not complete", self.id);
+            }
+            Err(RLNCError::ReceivedAllPieces) => {
+                println!("Node {}: Received all pieces", self.id);
+            }
+            Err(RLNCError::PieceNotUseful) => return Err(ReceiveError::LinearlyDependentChunk),
+            Err(RLNCError::InvalidData(msg)) => return Err(ReceiveError::InvalidMessage(msg)),
+        }
         if self.decoder.is_already_decoded() {
             if let Ok(decoded_data) = self.decode() {
                 self.encoder
@@ -173,7 +176,7 @@ impl<'a> Node<'a> {
     pub fn decode(&self) -> Result<Vec<u8>, String> {
         self.decoder.get_decoded_data().map_err(|e| match e {
             RLNCError::DecodingNotComplete => "Decoding not complete".to_string(),
-            RLNCError::InvalidData(msg) => msg + "LOL",
+            RLNCError::InvalidData(msg) => format!("Invalid data: {}", msg),
             RLNCError::ReceivedAllPieces => "Received all pieces".to_string(),
             RLNCError::PieceNotUseful => "Piece not useful".to_string(),
         })

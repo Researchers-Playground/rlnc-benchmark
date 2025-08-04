@@ -128,7 +128,7 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
 fn main() {
     let committer = PedersenCommitter::new(256);
     let configs = vec![
-        NetworkConfig::new(5, 3, 1, 5, 256), // 5 nodes, degree=1, aggressive=1, num_chunks=1, chunk_size=4
+        NetworkConfig::new(100, 6, 1, 5, 256), // 5 nodes, degree=1, aggressive=1, num_chunks=1, chunk_size=4
     ];
 
     for config in configs {
