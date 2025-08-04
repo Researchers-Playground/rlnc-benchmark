@@ -5,18 +5,22 @@ use crate::{
 use curve25519_dalek::{traits::MultiscalarMul, RistrettoPoint, Scalar};
 use rand::Rng;
 
+///! Note that: all variables is public for easily to benchmark
+
 #[derive(Clone, Debug)]
 pub struct Message {
-    chunk: CodedPacket,
-    commitments: Vec<RistrettoPoint>,
+    pub chunk: CodedPacket,
+    pub commitments: Vec<RistrettoPoint>,
+    pub source_id: usize,
 }
 
 pub struct Node<'a> {
-    encoder: NetworkEncoder<'a>,
-    decoder: NetworkDecoder<'a>,
-    recoder: NetworkRecoder,
-    committer: &'a PedersenCommitter,
-    neighbors: Vec<usize>,
+    pub id: usize,
+    pub encoder: NetworkEncoder<'a>,
+    pub decoder: NetworkDecoder<'a>,
+    pub recoder: NetworkRecoder,
+    pub committer: &'a PedersenCommitter,
+    pub neighbors: Vec<usize>,
 }
 
 #[derive(Debug)]
@@ -29,8 +33,12 @@ pub enum ReceiveError {
 }
 
 impl Message {
-    pub fn new(chunk: CodedPacket, commitments: Vec<RistrettoPoint>) -> Self {
-        Message { chunk, commitments }
+    pub fn new(chunk: CodedPacket, commitments: Vec<RistrettoPoint>, source_id: usize) -> Self {
+        Message {
+            chunk,
+            commitments,
+            source_id,
+        }
     }
 
     fn coefficients_to_scalars(&self) -> Vec<Scalar> {
@@ -40,21 +48,25 @@ impl Message {
     pub fn verify(&self, committer: &PedersenCommitter) -> Result<(), String> {
         let msm =
             RistrettoPoint::multiscalar_mul(&self.coefficients_to_scalars(), &self.commitments);
-
         let commitment = committer.commit(&self.chunk.data)?;
         if msm != commitment {
             return Err("The commitment does not match".to_string());
         }
         Ok(())
     }
+
+    pub fn get_source_id(&self) -> usize {
+        self.source_id
+    }
 }
 
 impl<'a> Node<'a> {
-    pub fn new(committer: &'a PedersenCommitter, num_chunks: usize) -> Self {
+    pub fn new(id: usize, committer: &'a PedersenCommitter, num_chunks: usize) -> Self {
         let encoder = NetworkEncoder::new(committer, None, num_chunks).unwrap();
         let decoder = NetworkDecoder::new(committer, num_chunks);
         let recoder = NetworkRecoder::new(Vec::new(), num_chunks);
         Node {
+            id,
             encoder,
             decoder,
             recoder,
@@ -64,6 +76,7 @@ impl<'a> Node<'a> {
     }
 
     pub fn new_source(
+        id: usize,
         committer: &'a PedersenCommitter,
         block: &[u8],
         num_chunks: usize,
@@ -72,12 +85,17 @@ impl<'a> Node<'a> {
         let decoder = NetworkDecoder::new(committer, num_chunks);
         let recoder = NetworkRecoder::new(Vec::new(), num_chunks);
         Ok(Node {
+            id,
             encoder,
             decoder,
             recoder,
             committer,
             neighbors: Vec::new(),
         })
+    }
+
+    pub fn get_id(&self) -> usize {
+        self.id
     }
 
     fn check_existing_commitments(&self, commitments: &[RistrettoPoint]) -> Result<(), String> {
@@ -129,7 +147,7 @@ impl<'a> Node<'a> {
             data: coded_packet.data,
             coefficients: coded_packet.coefficients,
         };
-        let message = Message::new(chunk, commitments);
+        let message = Message::new(chunk, commitments, self.id);
         message.verify(self.committer)?;
         Ok(message)
     }
@@ -147,7 +165,7 @@ impl<'a> Node<'a> {
             .get_commitments()
             .clone()
             .unwrap_or_else(Vec::new);
-        let message = Message::new(chunk, commitments);
+        let message = Message::new(chunk, commitments, self.id);
         message.verify(self.committer)?;
         Ok(message)
     }
@@ -155,8 +173,9 @@ impl<'a> Node<'a> {
     pub fn decode(&self) -> Result<Vec<u8>, String> {
         self.decoder.get_decoded_data().map_err(|e| match e {
             RLNCError::DecodingNotComplete => "Decoding not complete".to_string(),
-            RLNCError::InvalidData(msg) => msg,
-            _ => "Decoding failed".to_string(),
+            RLNCError::InvalidData(msg) => msg + "LOL",
+            RLNCError::ReceivedAllPieces => "Received all pieces".to_string(),
+            RLNCError::PieceNotUseful => "Piece not useful".to_string(),
         })
     }
 
@@ -176,17 +195,24 @@ impl<'a> Node<'a> {
         for &neighbor_id in &self.neighbors {
             if let Ok(message) = self.send() {
                 if rng.random::<f32>() >= packet_loss_rate {
-                    println!("Sent to neighbor {}", neighbor_id);
+                    println!("Node {} sent to neighbor {}", self.id, neighbor_id);
                     for neighbor in neighbors.iter_mut() {
-                        if neighbor.neighbors.contains(&self_id) {
-                            neighbor
-                                .receive(message.clone())
-                                .unwrap_or_else(|e| println!("Failed to receive: {:?}", e));
+                        if neighbor.get_id() == neighbor_id {
+                            neighbor.receive(message.clone()).unwrap_or_else(|e| {
+                                println!(
+                                    "Node {} failed to receive from {}: {:?}",
+                                    neighbor_id, self.id, e
+                                )
+                            });
                             break;
                         }
                     }
                 } else {
-                    return Err(ReceiveError::NetworkError("Packet lost".to_string()));
+                    println!("Packet from node {} to {} lost", self.id, neighbor_id);
+                    return Err(ReceiveError::NetworkError(format!(
+                        "Packet lost from node {} to {}",
+                        self.id, neighbor_id
+                    )));
                 }
             }
         }
@@ -204,10 +230,11 @@ mod tests {
         let num_chunks = 3;
         let chunk_size = 4;
         let committer = PedersenCommitter::new(chunk_size);
-        let node = Node::new(&committer, num_chunks);
+        let node = Node::new(0, &committer, num_chunks);
         assert_eq!(node.decoder.get_piece_count(), num_chunks);
         assert!(node.encoder.get_chunks().is_empty());
         assert_eq!(node.recoder.get_piece_count(), num_chunks);
+        assert_eq!(node.get_id(), 0);
     }
 
     #[test]
@@ -216,9 +243,10 @@ mod tests {
         let chunk_size = 4;
         let committer = PedersenCommitter::new(chunk_size);
         let block = random_u8_slice(num_chunks * chunk_size * 32);
-        let source_node = Node::new_source(&committer, &block, num_chunks).unwrap();
+        let source_node = Node::new_source(1, &committer, &block, num_chunks).unwrap();
         assert_eq!(source_node.decoder.get_piece_count(), num_chunks);
         assert!(!source_node.encoder.get_chunks().is_empty());
+        assert_eq!(source_node.get_id(), 1);
     }
 
     #[test]
@@ -226,12 +254,11 @@ mod tests {
         let num_chunks = 3;
         let chunk_size = 4;
         let committer = PedersenCommitter::new(chunk_size);
-        let block: Vec<u8> = (0..num_chunks * chunk_size * 32)
-            .map(|_| rand::random::<u8>())
-            .collect();
-        let source_node = Node::new_source(&committer, &block, num_chunks).unwrap();
-        let mut dest_node = Node::new(&committer, num_chunks);
+        let block = random_u8_slice(num_chunks * chunk_size * 32);
+        let source_node = Node::new_source(1, &committer, &block, num_chunks).unwrap();
+        let mut dest_node = Node::new(2, &committer, num_chunks);
         let message = source_node.send().unwrap();
+        assert_eq!(message.get_source_id(), 1);
         dest_node.receive(message).unwrap();
         assert_eq!(dest_node.decoder.get_useful_piece_count(), 1);
     }
@@ -242,8 +269,8 @@ mod tests {
         let chunk_size = 4;
         let committer = PedersenCommitter::new(chunk_size + 1);
         let block = random_u8_slice(num_chunks * chunk_size * 32);
-        let source_node = Node::new_source(&committer, &block, num_chunks).unwrap();
-        let mut dest_node = Node::new(&committer, num_chunks);
+        let source_node = Node::new_source(1, &committer, &block, num_chunks).unwrap();
+        let mut dest_node = Node::new(2, &committer, num_chunks);
         for _ in 0..num_chunks {
             let message = source_node.send().unwrap();
             dest_node.receive(message).unwrap();
@@ -260,8 +287,8 @@ mod tests {
         let chunk_size = 4;
         let committer = PedersenCommitter::new(chunk_size);
         let block = random_u8_slice(num_chunks * chunk_size * 32);
-        let source_node = Node::new_source(&committer, &block, num_chunks).unwrap();
-        let mut dest_node = Node::new(&committer, num_chunks);
+        let source_node = Node::new_source(1, &committer, &block, num_chunks).unwrap();
+        let mut dest_node = Node::new(2, &committer, num_chunks);
 
         let initial_message = source_node.send().unwrap();
         dest_node.receive(initial_message).unwrap();
@@ -276,6 +303,7 @@ mod tests {
         }
 
         let recoded_message = dest_node.recode(packets).unwrap();
+        assert_eq!(recoded_message.get_source_id(), 2);
         assert!(recoded_message.verify(&committer).is_ok());
     }
 
@@ -285,11 +313,11 @@ mod tests {
         let chunk_size = 4;
         let committer = PedersenCommitter::new(chunk_size);
         let block = random_u8_slice(num_chunks * chunk_size * 32);
-        let mut source_node = Node::new_source(&committer, &block, num_chunks).unwrap();
-        let mut dest_node = Node::new(&committer, num_chunks);
-        source_node.add_neighbor(1); // ID 1 cho dest_node
-        dest_node.add_neighbor(0); // ID 0 cho source_node
-        let mut neighbors = vec![&mut dest_node]; // Truyền dest_node làm neighbor
+        let mut source_node = Node::new_source(0, &committer, &block, num_chunks).unwrap();
+        let mut dest_node = Node::new(1, &committer, num_chunks);
+        source_node.add_neighbor(1);
+        dest_node.add_neighbor(0);
+        let mut neighbors = vec![&mut dest_node];
         source_node
             .simulate_network(0.0, &mut neighbors[..], 0)
             .unwrap();
