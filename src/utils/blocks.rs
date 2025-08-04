@@ -1,8 +1,6 @@
-use rand::RngCore;
+use crate::utils::ristretto::random_u8_slice;
 
 pub fn create_random_block(block_size: usize) -> Vec<u8> {
-    let mut block: Vec<u8> = vec![0; block_size];
-    let mut rng = rand::rng();
-    rng.fill_bytes(&mut block);
+    let block: Vec<u8> = random_u8_slice(block_size);
     block
 }

@@ -50,14 +50,14 @@ fn main() {
     let shreds_encoders = shreds
         .iter()
         .map(|shred| {
-            let encoder = NetworkEncoder::new(&committer, shred.to_vec(), num_chunks).unwrap();
+            let encoder = NetworkEncoder::new(&committer, Some(shred.to_vec()), num_chunks).unwrap();
             encoder
         })
         .collect::<Vec<_>>();
     let encode_time = Instant::now();
     let coded_block = shreds_encoders
         .par_iter()
-        .map(|encoder| encoder.encode())
+        .map(|encoder| encoder.encode().unwrap())
         .collect::<Vec<_>>();
     let encode_time = encode_time.elapsed();
     println!("📊 Encode time: {:?}", encode_time);
@@ -72,7 +72,7 @@ fn main() {
     let commitments_time = Instant::now();
     let shreds_commitments = shreds_encoders
         .par_iter()
-        .map(|encoder| encoder.get_commitments())
+        .map(|encoder| encoder.get_commitments().unwrap())
         .collect::<Vec<_>>();
     let commitments_time = commitments_time.elapsed();
     println!("📊 Commitments time: {:?}", commitments_time);
