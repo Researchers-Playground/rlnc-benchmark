@@ -1,4 +1,4 @@
-use crate::commitments::pedersen::ristretto::Committer;
+use crate::commitments::ristretto::pedersen::PedersenCommitter;
 use crate::utils::matrix::Echelon;
 use crate::utils::ristretto::{block_to_chunks, chunk_to_scalars};
 use curve25519_dalek::ristretto::RistrettoPoint;
@@ -31,13 +31,13 @@ fn generate_random_coefficients(length: usize) -> Vec<Scalar> {
 
 pub struct NetworkEncoder<'a> {
     chunks: Vec<Vec<Scalar>>,
-    committer: &'a Committer,
+    committer: &'a PedersenCommitter,
     original_length: usize,
 }
 
 impl<'a> NetworkEncoder<'a> {
     pub fn new(
-        committer: &'a Committer,
+        committer: &'a PedersenCommitter,
         original_data: Vec<u8>,
         num_chunks: usize,
     ) -> Result<Self, String> {
@@ -107,13 +107,13 @@ pub struct NetworkDecoder<'a> {
     received_chunks: Vec<Vec<Scalar>>,
     commitments: Option<Vec<RistrettoPoint>>,
     echelon: Echelon,
-    committer: &'a Committer,
+    committer: &'a PedersenCommitter,
     piece_count: usize,
     original_length: Option<usize>,
 }
 
 impl<'a> NetworkDecoder<'a> {
-    pub fn new(committer: &'a Committer, piece_count: usize) -> Self {
+    pub fn new(committer: &'a PedersenCommitter, piece_count: usize) -> Self {
         NetworkDecoder {
             received_chunks: Vec::new(),
             commitments: None,
@@ -283,7 +283,7 @@ mod tests {
         use crate::utils::ristretto::random_u8_slice;
 
         let num_chunks = 10;
-        let committer = Committer::new(num_chunks);
+        let committer = PedersenCommitter::new(num_chunks);
         let test_data = random_u8_slice(num_chunks * 32); // 10 chunks * 32 bytes = 320 bytes
         let encoder = NetworkEncoder::new(&committer, test_data, num_chunks).unwrap();
         assert_eq!(encoder.get_piece_count(), 10);
@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn test_network_decoder() {
         let num_chunks = 10;
-        let committer = Committer::new(num_chunks);
+        let committer = PedersenCommitter::new(num_chunks);
         let original_data: Vec<u8> = (0..num_chunks * 31).map(|_| rand::random::<u8>()).collect();
 
         let encoder = NetworkEncoder::new(&committer, original_data.clone(), num_chunks).unwrap();

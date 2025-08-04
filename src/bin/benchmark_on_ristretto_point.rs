@@ -1,5 +1,5 @@
 use curve25519_dalek::RistrettoPoint;
-use rlnc_benchmark::commitments::pedersen::ristretto::Committer;
+use rlnc_benchmark::commitments::ristretto::pedersen::PedersenCommitter;
 use rlnc_benchmark::utils::bytes::bytes_to_human_readable;
 use std::time::Instant;
 // network coding
@@ -45,7 +45,7 @@ fn main() {
     // <END: RLNC configuration>
 
     // <BEGIN: RLNC create commitment one block>
-    let committer = Committer::new(chunk_size);
+    let committer = PedersenCommitter::new(chunk_size);
     let shreds = block.chunks(chunk_size).collect::<Vec<_>>();
     let shreds_encoders = shreds
         .iter()

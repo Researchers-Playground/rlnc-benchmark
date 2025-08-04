@@ -4,13 +4,13 @@ use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::MultiscalarMul;
 use rand::Rng;
 
-pub struct Committer {
+pub struct PedersenCommitter {
     generators: Vec<RistrettoPoint>,
 }
 
-impl Committer {
+impl PedersenCommitter {
     pub fn new(n: usize) -> Self {
-        Committer {
+        PedersenCommitter {
             generators: generators(n),
         }
     }
