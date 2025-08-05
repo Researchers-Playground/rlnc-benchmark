@@ -1,6 +1,8 @@
-use curve25519_dalek::RistrettoPoint;
-use rlnc_benchmark::commitments::ristretto::pedersen::PedersenCommitter;
+use curve25519_dalek::{RistrettoPoint, Scalar};
+use rand::{rngs::StdRng, SeedableRng};
+use rlnc_benchmark::commitments::ristretto::discrete_log::DiscreteLogCommitter;
 use rlnc_benchmark::utils::bytes::bytes_to_human_readable;
+use rlnc_benchmark::utils::ristretto::chunk_to_scalars;
 use std::time::Instant;
 // network coding
 use rayon::prelude::*;
@@ -45,16 +47,30 @@ fn main() {
     // <END: RLNC configuration>
 
     // <BEGIN: RLNC create commitment one block>
-    let committer = PedersenCommitter::new(chunk_size);
-    let shreds = extended_matrix.data().chunks(chunk_size).collect::<Vec<_>>();
+    let shreds = extended_matrix.data().chunks(shreds_size).collect::<Vec<_>>();
+    let shreds_commiters = shreds
+    .par_iter()
+    .map(|shred| {
+        let mut rng = StdRng::seed_from_u64(42);
+        let data_chunk: Vec<Vec<Scalar>> = shred
+        .chunks(chunk_size)
+        .map(|chunk| chunk_to_scalars(chunk).unwrap())
+        .collect();
+        let committer = DiscreteLogCommitter::new(&data_chunk, &mut rng).unwrap();
+        committer
+    })
+    .collect::<Vec<_>>();
     let shreds_encoders = shreds
-        .iter()
-        .map(|shred| {
-            let encoder = NetworkEncoder::new(&committer, Some(shred.to_vec()), num_chunks).unwrap();
+        .par_iter()
+        .zip(shreds_commiters.par_iter())
+        .map(|(shred, commiter)| {
+            let encoder = NetworkEncoder::new(commiter, Some(shred.to_vec()), num_chunks).unwrap();
             encoder
         })
         .collect::<Vec<_>>();
     let encode_time = Instant::now();
+
+
     let coded_block = shreds_encoders
         .par_iter()
         .map(|encoder| encoder.encode().unwrap())
@@ -79,7 +95,7 @@ fn main() {
     println!(
         "📊 Commitments size: {}",
         bytes_to_human_readable(
-            shreds_commitments.len() * (shreds_commitments[0].len() * size_of::<RistrettoPoint>())
+            shreds_commitments.len() * size_of::<RistrettoPoint>()
         )
     );
     // <END: RLNC encoding + create commitment one block>
@@ -89,8 +105,9 @@ fn main() {
     let decoded_block = coded_block
         .par_iter()
         .zip(shreds_commitments.par_iter())
-        .map(|(packet, commitments)| {
-            let decoder = NetworkDecoder::new(&committer, num_chunks);
+        .zip(shreds_commiters.par_iter())
+        .map(|((packet, commitments), committer)| {
+            let decoder = NetworkDecoder::new(committer, num_chunks);
             let result = decoder.verify_coded_piece(packet, &commitments);
             match result {
                 Ok(_) => true,
