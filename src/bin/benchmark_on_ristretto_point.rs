@@ -38,7 +38,7 @@ fn main() {
     // <BEGIN: RLNC configuration>
     let num_shreds: usize = k;
     let num_chunks = 16;
-    let shreds_size = extended_matrix.data().len() / num_shreds;
+    let shreds_size = (extended_matrix.data().len() as f64 / num_shreds as f64).ceil() as usize;
     let chunk_size = shreds_size / num_chunks;
     println!("Shreds size: {}", bytes_to_human_readable(shreds_size));
     println!("Chunk size: {}", bytes_to_human_readable(chunk_size));
@@ -46,7 +46,7 @@ fn main() {
 
     // <BEGIN: RLNC create commitment one block>
     let committer = PedersenCommitter::new(chunk_size);
-    let shreds = block.chunks(chunk_size).collect::<Vec<_>>();
+    let shreds = extended_matrix.data().chunks(chunk_size).collect::<Vec<_>>();
     let shreds_encoders = shreds
         .iter()
         .map(|shred| {
@@ -72,7 +72,7 @@ fn main() {
     let commitments_time = Instant::now();
     let shreds_commitments = shreds_encoders
         .par_iter()
-        .map(|encoder| encoder.get_commitments().unwrap())
+        .map(|encoder| encoder.get_commitment().unwrap())
         .collect::<Vec<_>>();
     let commitments_time = commitments_time.elapsed();
     println!("📊 Commitments time: {:?}", commitments_time);
@@ -91,7 +91,7 @@ fn main() {
         .zip(shreds_commitments.par_iter())
         .map(|(packet, commitments)| {
             let decoder = NetworkDecoder::new(&committer, num_chunks);
-            let result = decoder.verify_coded_packet(packet, &commitments);
+            let result = decoder.verify_coded_piece(packet, &commitments);
             match result {
                 Ok(_) => true,
                 Err(_) => false,

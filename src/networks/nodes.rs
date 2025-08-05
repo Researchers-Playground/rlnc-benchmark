@@ -1,6 +1,6 @@
 use crate::{
-    commitments::ristretto::pedersen::PedersenCommitter,
-    utils::rlnc::{CodedPacket, NetworkDecoder, NetworkEncoder, NetworkRecoder, RLNCError},
+    commitments::{ristretto::pedersen::PedersenCommitter, CodedPiece},
+    utils::rlnc::{NetworkDecoder, NetworkEncoder, NetworkRecoder, RLNCError},
 };
 use curve25519_dalek::{traits::MultiscalarMul, RistrettoPoint, Scalar};
 use rand::Rng;
@@ -9,15 +9,15 @@ use rand::Rng;
 
 #[derive(Clone, Debug)]
 pub struct Message {
-    pub chunk: CodedPacket,
+    pub piece: CodedPiece<Scalar>,
     pub commitments: Vec<RistrettoPoint>,
     pub source_id: usize,
 }
 
 pub struct Node<'a> {
     pub id: usize,
-    pub encoder: NetworkEncoder<'a>,
-    pub decoder: NetworkDecoder<'a>,
+    pub encoder: NetworkEncoder<'a, PedersenCommitter>,
+    pub decoder: NetworkDecoder<'a, PedersenCommitter>,
     pub recoder: NetworkRecoder,
     pub committer: &'a PedersenCommitter,
     pub neighbors: Vec<usize>,
@@ -33,22 +33,22 @@ pub enum ReceiveError {
 }
 
 impl Message {
-    pub fn new(chunk: CodedPacket, commitments: Vec<RistrettoPoint>, source_id: usize) -> Self {
+    pub fn new(piece: CodedPiece, commitments: Vec<RistrettoPoint>, source_id: usize) -> Self {
         Message {
-            chunk,
+            piece,
             commitments,
             source_id,
         }
     }
 
     fn coefficients_to_scalars(&self) -> Vec<Scalar> {
-        self.chunk.coefficients.clone()
+        self.piece.coefficients.clone()
     }
 
     pub fn verify(&self, committer: &PedersenCommitter) -> Result<(), String> {
         let msm =
             RistrettoPoint::multiscalar_mul(&self.coefficients_to_scalars(), &self.commitments);
-        let commitment = committer.commit(&self.chunk.data)?;
+        let commitment = committer.commit(&self.piece.data)?;
         if msm != commitment {
             return Err("The commitment does not match".to_string());
         }
@@ -98,29 +98,29 @@ impl<'a> Node<'a> {
         self.id
     }
 
-    fn check_existing_commitments(&self, commitments: &[RistrettoPoint]) -> Result<(), String> {
-        self.decoder.check_commitments(commitments)?;
+    fn check_existing_commitment(&self, commitment: &[RistrettoPoint]) -> Result<(), String> {
+        self.decoder.check_commitment(&commitment.to_vec())?;
         Ok(())
     }
 
-    fn check_existing_chunks(&self, chunk: &CodedPacket) -> Result<(), String> {
+    fn check_existing_chunks(&self, chunk: &CodedPiece) -> Result<(), String> {
         self.decoder.check_chunks(chunk)?;
         Ok(())
     }
 
     pub fn receive(&mut self, message: Message) -> Result<(), ReceiveError> {
-        self.check_existing_commitments(&message.commitments)
+        self.check_existing_commitment(&message.commitments)
             .map_err(ReceiveError::ExistingCommitmentsMismatch)?;
-        self.check_existing_chunks(&message.chunk)
+        self.check_existing_chunks(&message.piece)
             .map_err(ReceiveError::ExistingChunksMismatch)?;
 
         message
             .verify(self.committer)
             .map_err(ReceiveError::InvalidMessage)?;
 
-        let coded_packet = CodedPacket {
-            data: message.chunk.data,
-            coefficients: message.chunk.coefficients,
+        let coded_packet = CodedPiece {
+            data: message.piece.data,
+            coefficients: message.piece.coefficients,
         };
         match self.decoder.decode(&coded_packet, &message.commitments) {
             Ok(_) => {}
@@ -145,8 +145,8 @@ impl<'a> Node<'a> {
 
     pub fn send(&self) -> Result<Message, String> {
         let coded_packet = self.encoder.encode()?;
-        let commitments = self.encoder.get_commitments()?;
-        let chunk = CodedPacket {
+        let commitments = self.encoder.get_commitment()?;
+        let chunk = CodedPiece {
             data: coded_packet.data,
             coefficients: coded_packet.coefficients,
         };
@@ -155,17 +155,17 @@ impl<'a> Node<'a> {
         Ok(message)
     }
 
-    pub fn recode(&mut self, received_packets: Vec<CodedPacket>) -> Result<Message, String> {
+    pub fn recode(&mut self, received_packets: Vec<CodedPiece>) -> Result<Message, String> {
         self.recoder.update_packets(received_packets)?;
 
         let coded_packet = self.recoder.recode();
-        let chunk = CodedPacket {
+        let chunk = CodedPiece {
             data: coded_packet.data,
             coefficients: coded_packet.coefficients,
         };
         let commitments = self
             .decoder
-            .get_commitments()
+            .get_commitment()
             .clone()
             .unwrap_or_else(Vec::new);
         let message = Message::new(chunk, commitments, self.id);
@@ -299,9 +299,9 @@ mod tests {
         let mut packets = Vec::new();
         for _ in 0..num_chunks {
             let message = source_node.send().unwrap();
-            packets.push(CodedPacket {
-                data: message.chunk.data,
-                coefficients: message.chunk.coefficients,
+            packets.push(CodedPiece {
+                data: message.piece.data,
+                coefficients: message.piece.coefficients,
             });
         }
 

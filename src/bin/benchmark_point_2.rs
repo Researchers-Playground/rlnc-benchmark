@@ -86,8 +86,8 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
                     if let Ok(message) = node.send() {
                         // println!("created message: {:?}", message);
 
-                        bandwidth_bytes += message.chunk.data.len() * 32
-                            + message.chunk.coefficients.len() * 32
+                        bandwidth_bytes += message.piece.data.len() * 32
+                            + message.piece.coefficients.len() * 32
                             + message.commitments.len() * 32;
 
                         for &neighbor_id in &node.neighbors {
@@ -128,7 +128,7 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
 fn main() {
     let committer = PedersenCommitter::new(256);
     let configs = vec![
-        NetworkConfig::new(100, 6, 1, 5, 256), // 5 nodes, degree=1, aggressive=1, num_chunks=1, chunk_size=4
+        NetworkConfig::new(10, 3, 1, 8, 256),
     ];
 
     for config in configs {
