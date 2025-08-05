@@ -72,7 +72,7 @@ fn main() {
     let commitments_time = Instant::now();
     let shreds_commitments = shreds_encoders
         .par_iter()
-        .map(|encoder| encoder.get_commitments().unwrap())
+        .map(|encoder| encoder.get_commitment().unwrap())
         .collect::<Vec<_>>();
     let commitments_time = commitments_time.elapsed();
     println!("📊 Commitments time: {:?}", commitments_time);
@@ -91,7 +91,7 @@ fn main() {
         .zip(shreds_commitments.par_iter())
         .map(|(packet, commitments)| {
             let decoder = NetworkDecoder::new(&committer, num_chunks);
-            let result = decoder.verify_coded_packet(packet, &commitments);
+            let result = decoder.verify_coded_piece(packet, &commitments);
             match result {
                 Ok(_) => true,
                 Err(_) => false,

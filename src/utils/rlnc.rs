@@ -1,21 +1,9 @@
-use crate::commitments::ristretto::pedersen::PedersenCommitter;
+use crate::commitments::{Committer, CodedPiece};
 use crate::utils::matrix::Echelon;
 use crate::utils::ristretto::{block_to_chunks, chunk_to_scalars};
-use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::Scalar;
 use rand::Rng;
 
-#[derive(Clone, Debug)]
-pub struct CodedPacket {
-    pub data: Vec<Scalar>,
-    pub coefficients: Vec<Scalar>,
-}
-
-impl CodedPacket {
-    pub fn get_data_len(&self) -> usize {
-        self.data.len()
-    }
-}
 
 #[derive(Debug)]
 pub enum RLNCError {
@@ -35,14 +23,14 @@ fn generate_random_coefficients(length: usize) -> Vec<Scalar> {
         .collect()
 }
 
-pub struct NetworkEncoder<'a> {
-    chunks: Vec<Vec<Scalar>>,
-    committer: &'a PedersenCommitter,
+pub struct NetworkEncoder<'a, C: Committer> {
+    chunks: Vec<Vec<C::Scalar>>,
+    committer: &'a C,
 }
 
-impl<'a> NetworkEncoder<'a> {
+impl<'a, C: Committer<Scalar = Scalar>> NetworkEncoder<'a, C> {
     pub fn new(
-        committer: &'a PedersenCommitter,
+        committer: &'a C,
         original_data: Option<Vec<u8>>,
         num_chunks: usize,
     ) -> Result<Self, String> {
@@ -64,13 +52,13 @@ impl<'a> NetworkEncoder<'a> {
         Ok(())
     }
 
-    pub fn encode(&self) -> Result<CodedPacket, String> {
+    pub fn encode(&self) -> Result<CodedPiece, String> {
         if self.chunks.is_empty() {
             return Err("No chunks available for encoding".to_string());
         }
         let coefficients = generate_random_coefficients(self.chunks.len());
         let data = self.linear_combination(&coefficients);
-        Ok(CodedPacket { data, coefficients })
+        Ok(CodedPiece { data, coefficients })
     }
 
     /// Create linear combination of chunks using given coefficients
@@ -86,16 +74,11 @@ impl<'a> NetworkEncoder<'a> {
             .collect()
     }
 
-    pub fn get_commitments(&self) -> Result<Vec<RistrettoPoint>, String> {
+    pub fn get_commitment(&self) -> Result<C::Commitment, String> {
         if self.chunks.is_empty() {
             return Err("No chunks available for commitments".to_string());
         }
-        let commitments = self
-            .chunks
-            .iter()
-            .map(|chunk| self.committer.commit(&chunk).unwrap())
-            .collect();
-        Ok(commitments)
+        self.committer.commit(&self.chunks).map_err(|_| "Commitment failed".to_string())
     }
 
     pub fn get_chunks(&self) -> Vec<Vec<Scalar>> {
@@ -115,19 +98,19 @@ impl<'a> NetworkEncoder<'a> {
     }
 }
 
-pub struct NetworkDecoder<'a> {
-    received_chunks: Vec<Vec<Scalar>>,
-    commitments: Option<Vec<RistrettoPoint>>,
+pub struct NetworkDecoder<'a, C: Committer> {
+    received_chunks: Vec<Vec<C::Scalar>>,
+    commitment: Option<C::Commitment>,
     echelon: Echelon,
-    committer: &'a PedersenCommitter,
+    committer: &'a C,
     piece_count: usize,
 }
 
-impl<'a> NetworkDecoder<'a> {
-    pub fn new(committer: &'a PedersenCommitter, piece_count: usize) -> Self {
+impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
+    pub fn new(committer: &'a C, piece_count: usize) -> Self {
         NetworkDecoder {
             received_chunks: Vec::new(),
-            commitments: None,
+            commitment: None,
             echelon: Echelon::new(piece_count),
             committer,
             piece_count,
@@ -139,26 +122,26 @@ impl<'a> NetworkDecoder<'a> {
         self.piece_count
     }
 
-    pub fn get_commitments(&self) -> Option<Vec<RistrettoPoint>> {
-        self.commitments.clone()
+    pub fn get_commitment(&self) -> Option<C::Commitment> {
+        self.commitment.clone()
     }
 
-    pub fn check_commitments(&self, commitments: &[RistrettoPoint]) -> Result<(), String> {
-        if self.commitments.is_none() && !self.received_chunks.is_empty() {
+    pub fn check_commitment(&self, commitment: &C::Commitment) -> Result<(), String> 
+    where
+        C::Commitment: PartialEq + Clone,
+    {
+        if self.commitment.is_none() && !self.received_chunks.is_empty() {
             return Err("Commitments not set for received chunks".to_string());
         }
-        if let Some(existing_commitments) = &self.commitments {
-            if existing_commitments.len() != commitments.len() {
-                return Err("Number of commitments does not match".to_string());
-            }
-            if existing_commitments != commitments {
+        if let Some(existing_commitments) = &self.commitment {
+            if existing_commitments != commitment {
                 return Err("Commitments do not match existing ones".to_string());
             }
         }
         Ok(())
     }
 
-    pub fn check_chunks(&self, chunk: &CodedPacket) -> Result<(), String> {
+    pub fn check_chunks(&self, chunk: &CodedPiece<C::Scalar>) -> Result<(), String> {
         if !self.received_chunks.is_empty() {
             if self.received_chunks[0].len() != chunk.get_data_len() {
                 return Err("The chunk size is different".to_string());
@@ -169,47 +152,41 @@ impl<'a> NetworkDecoder<'a> {
 
     pub fn decode(
         &mut self,
-        coded_packet: &CodedPacket,
-        commitments: &[RistrettoPoint],
-    ) -> Result<(), RLNCError> {
-        if self.commitments.is_none() {
-            self.commitments = Some(commitments.to_vec());
+        coded_piece: &CodedPiece<C::Scalar>,
+        commitment: &C::Commitment,
+    ) -> Result<(), RLNCError> 
+    where
+        C::Commitment: Clone,
+    {
+        if self.commitment.is_none() {
+            self.commitment = Some(commitment.clone());
         }
-        self.verify_coded_packet(coded_packet, commitments)?;
-        self.direct_decode(coded_packet)
+        self.verify_coded_piece(coded_piece, commitment)?;
+        self.direct_decode(coded_piece)
     }
 
-    pub fn direct_decode(&mut self, coded_packet: &CodedPacket) -> Result<(), RLNCError> {
+    pub fn direct_decode(&mut self, coded_piece: &CodedPiece<C::Scalar>) -> Result<(), RLNCError> {
         if self.is_already_decoded() {
             return Err(RLNCError::ReceivedAllPieces);
         }
-        if !self.echelon.add_row(coded_packet.coefficients.clone()) {
+        if !self.echelon.add_row(coded_piece.coefficients.clone()) {
             return Err(RLNCError::PieceNotUseful);
         }
-        self.received_chunks.push(coded_packet.data.clone());
+        self.received_chunks.push(coded_piece.data.clone());
         Ok(())
     }
 
-    pub fn verify_coded_packet(
+    pub fn verify_coded_piece(
         &self,
-        coded_packet: &CodedPacket,
-        commitments: &[RistrettoPoint],
+        coded_piece: &CodedPiece<C::Scalar>,
+        commitment: &C::Commitment,
     ) -> Result<(), RLNCError> {
-        use curve25519_dalek::traits::MultiscalarMul;
-
-        let expected_commitment =
-            RistrettoPoint::multiscalar_mul(&coded_packet.coefficients, commitments);
-        let actual_commitment = self
-            .committer
-            .commit(&coded_packet.data)
-            .map_err(|e| RLNCError::InvalidData(e))?;
-
-        if expected_commitment != actual_commitment {
+        let is_valid = self.committer.verify(Some(commitment), coded_piece);
+        if !is_valid {
             return Err(RLNCError::InvalidData(
                 "Commitment verification failed".to_string(),
             ));
         }
-
         Ok(())
     }
 
@@ -246,16 +223,16 @@ impl<'a> NetworkDecoder<'a> {
     }
 }
 
-pub struct NetworkRecoder {
-    received_chunks: Vec<Vec<Scalar>>,
-    received_coefficients: Vec<Vec<Scalar>>,
+pub struct NetworkRecoder<S = Scalar> {
+    received_chunks: Vec<Vec<S>>,
+    received_coefficients: Vec<Vec<S>>,
     piece_count: usize,
 }
 
-impl NetworkRecoder {
-    pub fn new(coded_packets: Vec<CodedPacket>, piece_count: usize) -> Self {
-        let received_chunks: Vec<_> = coded_packets.iter().map(|p| p.data.clone()).collect();
-        let received_coefficients: Vec<_> = coded_packets
+impl<S: Clone> NetworkRecoder<S> {
+    pub fn new(coded_pieces: Vec<CodedPiece<S>>, piece_count: usize) -> Self {
+        let received_chunks: Vec<_> = coded_pieces.iter().map(|p| p.data.clone()).collect();
+        let received_coefficients: Vec<_> = coded_pieces
             .iter()
             .map(|p| p.coefficients.clone())
             .collect();
@@ -266,24 +243,32 @@ impl NetworkRecoder {
         }
     }
 
-    pub fn update_packets(&mut self, coded_packets: Vec<CodedPacket>) -> Result<(), String> {
-        if coded_packets.is_empty() {
+    pub fn update_packets(&mut self, coded_pieces: Vec<CodedPiece<S>>) -> Result<(), String> {
+        if coded_pieces.is_empty() {
             return Err("No packets to update".to_string());
         }
-        self.received_chunks = coded_packets.iter().map(|p| p.data.clone()).collect();
-        self.received_coefficients = coded_packets
+        self.received_chunks = coded_pieces.iter().map(|p| p.data.clone()).collect();
+        self.received_coefficients = coded_pieces
             .iter()
             .map(|p| p.coefficients.clone())
             .collect();
         Ok(())
     }
 
-    pub fn recode(&self) -> CodedPacket {
+    pub fn recode(&self) -> CodedPiece<S> 
+    where
+        S: Copy + std::ops::Mul<Output = S> + std::iter::Sum + From<u8>,
+    {
         if self.received_chunks.is_empty() {
             panic!("No packets to recode");
         }
 
-        let mixing_coeffs = generate_random_coefficients(self.received_chunks.len());
+        let mixing_coeffs: Vec<S> = (0..self.received_chunks.len())
+            .map(|_| {
+                let random_byte = rand::rng().random::<u8>();
+                S::from(random_byte)
+            })
+            .collect();
 
         let data = (0..self.received_chunks[0].len())
             .map(|i| {
@@ -305,7 +290,7 @@ impl NetworkRecoder {
             })
             .collect();
 
-        CodedPacket { data, coefficients }
+        CodedPiece { data, coefficients }
     }
 
     pub fn get_piece_count(&self) -> usize {
@@ -313,9 +298,15 @@ impl NetworkRecoder {
     }
 }
 
+impl NetworkRecoder<Scalar> {
+    pub fn new_scalar(coded_pieces: Vec<CodedPiece>, piece_count: usize) -> Self {
+        Self::new(coded_pieces, piece_count)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::utils::ristretto::random_u8_slice;
+    use crate::{commitments::ristretto::pedersen::PedersenCommitter, utils::ristretto::random_u8_slice};
 
     use super::*;
 
@@ -348,11 +339,11 @@ mod tests {
         let encoder =
             NetworkEncoder::new(&committer, Some(original_data.clone()), num_chunks).unwrap();
         let mut decoder = NetworkDecoder::new(&committer, num_chunks);
-        let commitments = encoder.get_commitments().unwrap();
+        let commitments = encoder.get_commitment().unwrap();
 
         while !decoder.is_already_decoded() {
-            let coded_packet = encoder.encode().unwrap();
-            decoder.decode(&coded_packet, &commitments).unwrap();
+            let coded_piece = encoder.encode().unwrap();
+            decoder.decode(&coded_piece, &commitments).unwrap();
         }
 
         let decoded_data = decoder.get_decoded_data().unwrap();

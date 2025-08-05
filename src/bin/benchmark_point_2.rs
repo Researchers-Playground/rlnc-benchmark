@@ -11,7 +11,6 @@ struct NetworkConfig {
     num_nodes: usize,
     degree: usize,
     aggressive: usize,
-    num_shreds: usize,
     num_chunks: usize,
     chunk_size: usize,
 }
@@ -21,7 +20,6 @@ impl NetworkConfig {
         num_nodes: usize,
         degree: usize,
         aggressive: usize,
-        num_shreds: usize,
         num_chunks: usize,
         chunk_size: usize,
     ) -> Self {
@@ -29,7 +27,6 @@ impl NetworkConfig {
             num_nodes,
             degree,
             aggressive,
-            num_shreds,
             num_chunks,
             chunk_size,
         }
@@ -44,16 +41,16 @@ struct BenchmarkResult {
 }
 
 fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> BenchmarkResult {
-    let block = create_random_block(config.num_shreds * config.num_chunks * config.chunk_size * 32);
+    let block = create_random_block(config.num_chunks * config.chunk_size * 32);
     let mut nodes = HashMap::new();
 
     // insert all node
     nodes.insert(
         0,
-        Node::new_source(0, committer, &block, config.num_shreds, config.num_chunks).unwrap(),
+        Node::new_source(0, committer, &block, config.num_chunks).unwrap(),
     );
     for id in 1..config.num_nodes {
-        nodes.insert(id, Node::new(id, committer, config.num_shreds, config.num_chunks));
+        nodes.insert(id, Node::new(id, committer, config.num_chunks));
     }
 
     // init neighbors
@@ -75,7 +72,7 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
     let mut cpu_usages = Vec::new();
     let mut system = System::new_all();
 
-    while !nodes.values().all(|node| node.is_fully_decode()) {
+    while !nodes.values().all(|node| node.decoder.is_already_decoded()) {
         round_count += 1;
 
         system.refresh_cpu();
@@ -86,10 +83,11 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
             for id in 0..config.num_nodes {
                 let mut neighbor_msgs = Vec::new();
                 if let Some(node) = nodes.get_mut(&id) {
-                    println!("Node {}: Send", id);
                     if let Ok(message) = node.send() {
-                        bandwidth_bytes += message.coded_block.len() * message.coded_block[0].data.len() * 32
-                            + message.coded_block.len() * message.coded_block[0].coefficients.len() * 32
+                        // println!("created message: {:?}", message);
+
+                        bandwidth_bytes += message.piece.data.len() * 32
+                            + message.piece.coefficients.len() * 32
                             + message.commitments.len() * 32;
 
                         for &neighbor_id in &node.neighbors {
@@ -130,7 +128,7 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
 fn main() {
     let committer = PedersenCommitter::new(256);
     let configs = vec![
-        NetworkConfig::new(10, 3, 1, 64, 1, 256), // 100 nodes, degree=6, aggressive=1, num_shreds = 16, num_chunks = 32, chunk_size=4
+        NetworkConfig::new(10, 3, 1, 8, 256),
     ];
 
     for config in configs {
