@@ -38,7 +38,7 @@ fn main() {
     // <BEGIN: RLNC configuration>
     let num_shreds: usize = k;
     let num_chunks = 16;
-    let shreds_size = extended_matrix.data().len() / num_shreds;
+    let shreds_size = (extended_matrix.data().len() as f64 / num_shreds as f64).ceil() as usize;
     let chunk_size = shreds_size / num_chunks;
     println!("Shreds size: {}", bytes_to_human_readable(shreds_size));
     println!("Chunk size: {}", bytes_to_human_readable(chunk_size));
@@ -46,7 +46,7 @@ fn main() {
 
     // <BEGIN: RLNC create commitment one block>
     let committer = PedersenCommitter::new(chunk_size);
-    let shreds = block.chunks(chunk_size).collect::<Vec<_>>();
+    let shreds = extended_matrix.data().chunks(chunk_size).collect::<Vec<_>>();
     let shreds_encoders = shreds
         .iter()
         .map(|shred| {
