@@ -335,6 +335,7 @@ mod tests {
         let num_chunks = 10;
         let committer = PedersenCommitter::new(num_chunks);
         let original_data: Vec<u8> = random_u8_slice(num_chunks * 32);
+        // let original_data = (0..32 * num_chunks).map(|_| rand::random::<u8>()).collect::<Vec<u8>>();
 
         let encoder =
             NetworkEncoder::new(&committer, Some(original_data.clone()), num_chunks).unwrap();
