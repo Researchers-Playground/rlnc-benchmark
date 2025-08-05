@@ -192,7 +192,6 @@ impl<'a> Node<'a> {
         &mut self,
         packet_loss_rate: f32,
         neighbors: &mut [&mut Node],
-        self_id: usize,
     ) -> Result<(), ReceiveError> {
         let mut rng = rand::rng();
         for &neighbor_id in &self.neighbors {
@@ -322,7 +321,7 @@ mod tests {
         dest_node.add_neighbor(0);
         let mut neighbors = vec![&mut dest_node];
         source_node
-            .simulate_network(0.0, &mut neighbors[..], 0)
+            .simulate_network(0.0, &mut neighbors[..])
             .unwrap();
         assert!(dest_node.decoder.get_useful_piece_count() > 0);
     }
