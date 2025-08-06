@@ -3,14 +3,27 @@ use crate::utils::matrix::Echelon;
 use crate::utils::ristretto::{block_to_chunks, chunk_to_scalars};
 use curve25519_dalek::Scalar;
 use rand::Rng;
+use thiserror::Error;
 
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum RLNCError {
+    #[error("Linearly dependent chunk received")]
     PieceNotUseful,
+    #[error("Received all pieces")]
     ReceivedAllPieces,
+    #[error("Decoding not complete")]
     DecodingNotComplete,
+    #[error("Invalid data: {0}")]
     InvalidData(String),
+    #[error("Encoding failed: {0}")]
+    EncodingFailed(String),
+    #[error("Decoding failed: {0}")]
+    DecodingFailed(String),
+    #[error("Invalid piece: {0}")]
+    InvalidPiece(String),
+    #[error("Insufficient pieces for decoding")]
+    InsufficientPieces,
 }
 
 fn generate_random_coefficients(length: usize) -> Vec<Scalar> {

@@ -13,8 +13,8 @@ const ONE_MEGABYTE: usize = 1024 * 1024;
 fn main() {
     const BLOCK_SIZE: usize = 2 * ONE_MEGABYTE; // 2MB như Celestia
     const SHARE_SIZE: usize = 512; // 512 bytes
-    let k: usize = (BLOCK_SIZE / SHARE_SIZE).isqrt();
-    println!("Block will have size {}x{}", k, k);
+    let k: usize = (BLOCK_SIZE / SHARE_SIZE).isqrt(); // 4096 shares -> 64x64 matrix
+    println!("Block will have size {}x{}", k, k); // 64 * 64
 
     let block: Vec<u8> = create_random_block(BLOCK_SIZE);
 

@@ -48,7 +48,7 @@ impl Message {
     pub fn verify(&self, committer: &PedersenCommitter) -> Result<(), String> {
         let msm =
             RistrettoPoint::multiscalar_mul(&self.coefficients_to_scalars(), &self.commitments);
-        let commitment = committer.commit(&self.piece.data)?;
+        let commitment = committer.commit(&self.piece.data).unwrap();
         if msm != commitment {
             return Err("The commitment does not match".to_string());
         }
@@ -132,6 +132,7 @@ impl<'a> Node<'a> {
             }
             Err(RLNCError::PieceNotUseful) => return Err(ReceiveError::LinearlyDependentChunk),
             Err(RLNCError::InvalidData(msg)) => return Err(ReceiveError::InvalidMessage(msg)),
+            _ => unreachable!(),// to do fix here
         }
         if self.decoder.is_already_decoded() {
             if let Ok(decoded_data) = self.decode() {
@@ -179,6 +180,7 @@ impl<'a> Node<'a> {
             RLNCError::InvalidData(msg) => format!("Invalid data: {}", msg),
             RLNCError::ReceivedAllPieces => "Received all pieces".to_string(),
             RLNCError::PieceNotUseful => "Piece not useful".to_string(),
+            _ => "Handle more error".to_string()
         })
     }
 
