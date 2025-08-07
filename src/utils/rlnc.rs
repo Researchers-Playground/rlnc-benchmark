@@ -61,7 +61,6 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkEncoder<'a, C> {
         Ok(CodedPiece { data, coefficients })
     }
 
-    /// Create linear combination of chunks using given coefficients
     fn linear_combination(&self, coefficients: &[Scalar]) -> Vec<Scalar> {
         (0..self.chunks[0].len())
             .map(|i| {

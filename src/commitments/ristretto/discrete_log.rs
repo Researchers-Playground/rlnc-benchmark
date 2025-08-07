@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::commitments::{CodedPiece, Committer};
 use curve25519_dalek::{
     constants::RISTRETTO_BASEPOINT_POINT,
@@ -57,23 +59,15 @@ impl DiscreteLogCommitter {
         original_packets: &[Vec<Scalar>],
         rng: &mut R,
     ) -> Result<Self, DiscreteLogError> {
-        if (original_packets.is_empty()) {
+        if original_packets.is_empty() {
             return Err(DiscreteLogError::InvalidDimensions {
                 expected: 1,
                 actual: original_packets.len(),
             });
         }
-        let params = DiscreteLogParams::new(
-            original_packets.len(),
-            original_packets[0].len(),
-        );
-        let structured_packets = Self::convert_to_structured_packets(&params, original_packets)?;
-
-        let (generators, signature_vector) = Self::generate_keys(
-            &params,
-            &structured_packets,
-            rng,
-        )?;
+        let data_dim = original_packets[0].len();
+        let params = DiscreteLogParams::new(original_packets.len(), data_dim);
+        let (generators, signature_vector) = Self::generate_keys(&params, original_packets, rng)?;
 
         Ok(Self {
             generators,
@@ -82,40 +76,6 @@ impl DiscreteLogCommitter {
         })
     }
     
-    /// Convert pure data packets to [I|D] structure automatically
-    /// This hides the mathematical structure from users
-    fn convert_to_structured_packets(
-        params: &DiscreteLogParams,
-        original_packets: &[Vec<Scalar>],
-    ) -> Result<Vec<Vec<Scalar>>, DiscreteLogError> {
-        if original_packets.len() != params.original_dim {
-            return Err(DiscreteLogError::InvalidDimensions {
-                expected: params.original_dim,
-                actual: original_packets.len(),
-            });
-        }
-        
-        let mut structured_packets = Vec::new();
-        
-        for (i, packet) in original_packets.iter().enumerate() {
-            if packet.len() == params.total_dim {
-                structured_packets.push(packet.clone());
-            } else if packet.len() == params.data_dim {
-                // Pure data packet, add identity part
-                let mut structured_packet = vec![Scalar::ZERO; params.total_dim];
-                structured_packet[i] = Scalar::ONE; // Identity part
-                structured_packet[params.original_dim..].copy_from_slice(packet); // Data part
-                structured_packets.push(structured_packet);
-            } else {
-                return Err(DiscreteLogError::InvalidDimensions {
-                    expected: params.data_dim,
-                    actual: packet.len(),
-                });
-            }
-        }
-        
-        Ok(structured_packets)
-    }
 
     pub fn from_keys(
         params: DiscreteLogParams,
@@ -155,9 +115,9 @@ impl DiscreteLogCommitter {
             });
         }
         for packet in original_packets {
-            if packet.len() != params.total_dim {
+            if packet.len() != params.data_dim {
                 return Err(DiscreteLogError::InvalidDimensions {
-                    expected: params.total_dim,
+                    expected: params.data_dim,
                     actual: packet.len(),
                 });
             }
@@ -176,7 +136,7 @@ impl DiscreteLogCommitter {
             .iter()
             .map(|&alpha| RISTRETTO_BASEPOINT_POINT * alpha)
             .collect();
-        let orthogonal_vector = Self::find_orthogonal_vector(original_packets, rng)?;
+        let orthogonal_vector = Self::find_orthogonal_vector_implicit(params, original_packets, rng)?;
         let mut signature_vector: Vec<Scalar> = Vec::new();
         for (&u_i, &alpha_i) in orthogonal_vector.iter().zip(alphas.iter()) {
             let alpha_inv = alpha_i.invert();
@@ -186,18 +146,22 @@ impl DiscreteLogCommitter {
         Ok((generators, signature_vector))
     }
 
-    fn find_orthogonal_vector<R: RngCore + CryptoRng>(
-        original_packets: &[Vec<Scalar>],
+    /// Find orthogonal vector for implicit [I|D] structure without constructing full packets
+    fn find_orthogonal_vector_implicit<R: RngCore + CryptoRng>(
+        params: &DiscreteLogParams,
+        packets: &[Vec<Scalar>],
         rng: &mut R,
     ) -> Result<Vec<Scalar>, DiscreteLogError> {
-        let m = original_packets.len();
-        let n = original_packets[0].len();
+        let m = params.original_dim;
+        let n = params.total_dim;
+        
         if m >= n {
             return Err(DiscreteLogError::InsufficientRank);
         }
 
         let mut orthogonal = vec![Scalar::ZERO; n];
         
+        // Set random values for data part (columns m..n)
         let mut has_nonzero = false;
         for i in m..n {
             let val = Scalar::from(rng.random::<u64>());
@@ -211,30 +175,34 @@ impl DiscreteLogCommitter {
             orthogonal[m] = Scalar::ONE;
         }
         
+        // For implicit [I|D] structure, each row i has:
+        // - Identity part: 1 at position i, 0 elsewhere  
+        // - Data part: packets[i]
+        // So dot product with orthogonal[0..m] | orthogonal[m..n] is:
+        // orthogonal[i] + sum(packets[i][j] * orthogonal[m+j] for j in 0..data_dim)
         for i in 0..m {
-            let mut sum = Scalar::ZERO;
-            for j in m..n {
-                sum += orthogonal[j] * original_packets[i][j];
+            let mut data_sum = Scalar::ZERO;
+            for (j, &data_val) in packets[i].iter().enumerate() {
+                data_sum += data_val * orthogonal[m + j];
             }
-            orthogonal[i] = -sum;
+            orthogonal[i] = -data_sum; // Make dot product zero
         }
         
         #[cfg(debug_assertions)]
         {
-            for packet in original_packets {
-                let dot_prod = Self::dot_product(&orthogonal, packet);
-                debug_assert_eq!(dot_prod, Scalar::ZERO, "Orthogonality verification failed");
+            // Verify orthogonality for implicit structure
+            for (packet_idx, data_packet) in packets.iter().enumerate() {
+                let mut dot_prod = orthogonal[packet_idx]; // Identity part contribution
+                for (j, &data_val) in data_packet.iter().enumerate() {
+                    dot_prod += data_val * orthogonal[m + j];
+                }
+                debug_assert_eq!(dot_prod, Scalar::ZERO, "Orthogonality verification failed for packet {}", packet_idx);
             }
         }
+        
         Ok(orthogonal)
     }
 
-    fn dot_product(a: &[Scalar], b: &[Scalar]) -> Scalar {
-        a.iter()
-            .zip(b.iter())
-            .map(|(&a_i, &b_i)| a_i * b_i)
-            .fold(Scalar::ZERO, |acc, x| acc + x)
-    }
 
     pub fn generators(&self) -> &[RistrettoPoint] {
         &self.generators
@@ -351,20 +319,16 @@ mod tests {
             .map(|chunk| chunk_to_scalars(chunk).unwrap())
             .collect();
 
-        let mut padded_packets = Vec::new();
-        for (i, data_chunk) in data_chunks.iter().enumerate() {
-            let mut packet = vec![Scalar::ZERO; num_packets + data_per_packet];
-            packet[i] = Scalar::ONE; // Identity part
-            packet[num_packets..].copy_from_slice(data_chunk); // Real data part
-            padded_packets.push(packet);
-        }
         let committer = DiscreteLogCommitter::new(&data_chunks, &mut rng).unwrap();
-        for packet in &padded_packets {
-            let coding_vector = packet[..num_packets].to_vec();
-            let data = packet[num_packets..].to_vec();
+        
+        // Test original packets with implicit identity structure
+        for (i, data_chunk) in data_chunks.iter().enumerate() {
+            let mut coding_vector = vec![Scalar::ZERO; num_packets];
+            coding_vector[i] = Scalar::ONE; // Identity part for this packet
+            
             let coded_piece = CodedPiece {
                 coefficients: coding_vector,
-                data,
+                data: data_chunk.clone(),
             };
             assert!(committer.verify_signature(&coded_piece));
         }
@@ -435,21 +399,17 @@ mod tests {
             .map(|chunk| chunk_to_scalars(chunk).unwrap())
             .collect();
             
-        // Build packets with [I|D] structure: [unit_vector | real_data]
-        let mut original_packets = Vec::new();
-        for (i, data_chunk) in data_chunks.iter().enumerate() {
-            let mut packet = vec![Scalar::ZERO; params.total_dim];
-            packet[i] = Scalar::ONE; // Identity part
-            packet[num_packets..].copy_from_slice(data_chunk); // Real data part
-            original_packets.push(packet);
-        }
-
-        let result = DiscreteLogCommitter::find_orthogonal_vector(&original_packets, &mut rng);
+        // Test the implicit orthogonal vector finding
+        let result = DiscreteLogCommitter::find_orthogonal_vector_implicit(&params, &data_chunks, &mut rng);
         assert!(result.is_ok());
 
         if let Ok(orthogonal) = result {
-            for packet in &original_packets {
-                let dot_prod = DiscreteLogCommitter::dot_product(&orthogonal, packet);
+            // Verify orthogonality for implicit [I|D] structure
+            for (packet_idx, data_packet) in data_chunks.iter().enumerate() {
+                let mut dot_prod = orthogonal[packet_idx]; // Identity part contribution
+                for (j, &data_val) in data_packet.iter().enumerate() {
+                    dot_prod += data_val * orthogonal[params.original_dim + j];
+                }
                 assert_eq!(dot_prod, Scalar::ZERO);
             }
         }
