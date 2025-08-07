@@ -2,10 +2,7 @@ pub mod reed_solomon;
 pub mod network_coding;
 
 use crate::{
-    commitments::{ristretto::pedersen::PedersenError, CodedPiece, Committer},
-    erase_code_methods::{network_coding::RLNCErasureCoder, reed_solomon::{RSErasureCoder, RSError}},
-    utils::rlnc::RLNCError,
-    networks::ErasureCoder
+    commitments::{ristretto::{discrete_log::DiscreteLogError, pedersen::PedersenError}, CodedPiece, Committer}, erase_code_methods::{network_coding::RLNCErasureCoder, reed_solomon::{RSErasureCoder, RSError}}, networks::ErasureCoder, utils::rlnc::RLNCError
 };
 use curve25519_dalek::scalar::Scalar;
 use thiserror::Error;
@@ -16,8 +13,10 @@ pub enum ErasureError {
     RLNC(RLNCError),
     #[error("RS error: {0}")]
     RS(RSError),
-    #[error("Commitment error: {0}")]
-    Commitment(PedersenError),
+    #[error("Pedersen commitment error: {0}")]
+    PedersenCommitment(PedersenError),
+    #[error("DiscreteLog commitment error: {0}")]
+    DiscreteLogCommitment(DiscreteLogError),
     #[error("Network error: {0}")]
     Network(String),
 }

@@ -90,8 +90,8 @@ impl<C: Committer<Scalar = Scalar>> ErasureCoder<C> for RSErasureCoder<C> {
         Ok(pieces[index].clone())
     }
 
-    fn verify(&self, piece: &Self::CodedData, _commitment: &C::Commitment) -> Result<(), Self::Error> {
-        let _scalars = chunk_to_scalars(piece)
+    fn verify(&self, piece: &Self::CodedData, commitment: &C::Commitment) -> Result<(), Self::Error> {
+        let scalars = chunk_to_scalars(piece)
             .map_err(|e| RSError::InvalidShare(e.to_string()))?;
         // Placeholder: Implement commitment verification
         Ok(())
@@ -101,7 +101,7 @@ impl<C: Committer<Scalar = Scalar>> ErasureCoder<C> for RSErasureCoder<C> {
         if self.received_shares.len() < self.num_data_shares {
             return Err(RSError::InsufficientShares);
         }
-        let rs = self.rs.clone();
+        let mut rs = self.rs.clone();
         let mut shares = vec![None; self.num_data_shares + self.num_parity_shares];
         for (index, share) in self.received_shares.iter().take(self.num_data_shares) {
             shares[*index] = Some(share.clone());

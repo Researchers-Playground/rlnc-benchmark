@@ -5,7 +5,6 @@ use crate::commitments::Committer;
 pub mod nodes;
 pub mod storage;
 pub mod message;
-pub mod virtual_oracle;
 pub mod node;
 
 pub trait ErasureCoder<C: Committer> {
