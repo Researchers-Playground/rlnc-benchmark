@@ -1,8 +1,16 @@
-pub mod reed_solomon;
 pub mod network_coding;
+pub mod reed_solomon;
 
 use crate::{
-    commitments::{ristretto::{discrete_log::DiscreteLogError, pedersen::PedersenError}, CodedPiece, Committer}, erase_code_methods::{network_coding::{NetworkCodingError, RLNCErasureCoder}, reed_solomon::{RSErasureCoder, RSError}}, networks::ErasureCoder
+    commitments::{
+        ristretto::{discrete_log::DiscreteLogError, pedersen::PedersenError},
+        CodedPiece, Committer,
+    },
+    erase_code_methods::{
+        network_coding::{NetworkCodingError, RLNCErasureCoder},
+        reed_solomon::{RSErasureCoder, RSError},
+    },
+    networks::ErasureCoder,
 };
 use curve25519_dalek::scalar::Scalar;
 use thiserror::Error;
@@ -29,44 +37,93 @@ pub enum ErasureCoderType<'a, C: Committer<Scalar = Scalar>> {
 impl<'a, C: Committer<Scalar = Scalar>> ErasureCoderType<'a, C> {
     pub fn encode(&self) -> Result<CodedData, ErasureError> {
         match self {
-            ErasureCoderType::RLNC(coder) => coder.encode().map_err(ErasureError::RLNC).map(|p| CodedData::RLNC(p)),
-            ErasureCoderType::RS(coder) => coder.encode().map_err(ErasureError::RS).map(|p| CodedData::RS(p)),
+            ErasureCoderType::RLNC(coder) => coder
+                .encode()
+                .map_err(ErasureError::RLNC)
+                .map(|p| CodedData::RLNC(p)),
+            ErasureCoderType::RS(coder) => coder
+                .encode()
+                .map_err(ErasureError::RS)
+                .map(|p| CodedData::RS(p)),
         }
     }
 
     pub fn decode(&mut self, piece: &CodedData) -> Result<(), ErasureError> {
         match (self, piece) {
-            (ErasureCoderType::RLNC(coder), CodedData::RLNC(piece)) => coder.decode(piece).map_err(ErasureError::RLNC),
-            (ErasureCoderType::RS(coder), CodedData::RS(piece)) => coder.decode(piece).map_err(ErasureError::RS),
-            _ => Err(ErasureError::Network("Mismatched coder and data type".to_string())),
+            (ErasureCoderType::RLNC(coder), CodedData::RLNC(piece)) => {
+                coder.decode(piece).map_err(ErasureError::RLNC)
+            }
+            (ErasureCoderType::RS(coder), CodedData::RS(piece)) => {
+                coder.decode(piece).map_err(ErasureError::RS)
+            }
+            _ => Err(ErasureError::Network(
+                "Mismatched coder and data type".to_string(),
+            )),
         }
     }
 
     pub fn recode(&mut self, pieces: &[CodedData]) -> Result<CodedData, ErasureError> {
         match self {
             ErasureCoderType::RLNC(coder) => {
-                let pieces: Vec<_> = pieces.iter().filter_map(|p| if let CodedData::RLNC(p) = p { Some(p.clone()) } else { None }).collect();
-                coder.recode(&pieces).map_err(ErasureError::RLNC).map(|p| CodedData::RLNC(p))
+                let pieces: Vec<_> = pieces
+                    .iter()
+                    .filter_map(|p| {
+                        if let CodedData::RLNC(p) = p {
+                            Some(p.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                coder
+                    .recode(&pieces)
+                    .map_err(ErasureError::RLNC)
+                    .map(|p| CodedData::RLNC(p))
             }
             ErasureCoderType::RS(coder) => {
-                let pieces: Vec<_> = pieces.iter().filter_map(|p| if let CodedData::RS(p) = p { Some(p.clone()) } else { None }).collect();
-                coder.recode(&pieces).map_err(ErasureError::RS).map(|p| CodedData::RS(p))
+                let pieces: Vec<_> = pieces
+                    .iter()
+                    .filter_map(|p| {
+                        if let CodedData::RS(p) = p {
+                            Some(p.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                coder
+                    .recode(&pieces)
+                    .map_err(ErasureError::RS)
+                    .map(|p| CodedData::RS(p))
             }
         }
     }
 
-    pub fn verify(&self, piece: &CodedData, commitment: &C::Commitment) -> Result<(), ErasureError> {
+    pub fn verify(
+        &self,
+        piece: &CodedData,
+        commitment: &C::Commitment,
+    ) -> Result<(), ErasureError> {
         match (self, piece) {
-            (ErasureCoderType::RLNC(coder), CodedData::RLNC(piece)) => coder.verify(piece, commitment).map_err(ErasureError::RLNC),
-            (ErasureCoderType::RS(coder), CodedData::RS(piece)) => coder.verify(piece, commitment).map_err(ErasureError::RS),
-            _ => Err(ErasureError::Network("Mismatched coder and data type".to_string())),
+            (ErasureCoderType::RLNC(coder), CodedData::RLNC(piece)) => {
+                coder.verify(piece, commitment).map_err(ErasureError::RLNC)
+            }
+            (ErasureCoderType::RS(coder), CodedData::RS(piece)) => {
+                coder.verify(piece, commitment).map_err(ErasureError::RS)
+            }
+            _ => Err(ErasureError::Network(
+                "Mismatched coder and data type".to_string(),
+            )),
         }
     }
 
     pub fn get_decoded_data(&self) -> Result<Vec<u8>, ErasureError> {
         match self {
             ErasureCoderType::RLNC(coder) => coder.get_decoded_data().map_err(ErasureError::RLNC),
-            ErasureCoderType::RS(coder) => <RSErasureCoder<C> as ErasureCoder<C>>::get_decoded_data(coder).map_err(ErasureError::RS),
+            ErasureCoderType::RS(coder) => {
+                <RSErasureCoder<C> as ErasureCoder<C>>::get_decoded_data(coder)
+                    .map_err(ErasureError::RS)
+            }
         }
     }
 

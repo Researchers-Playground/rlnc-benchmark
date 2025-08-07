@@ -18,18 +18,18 @@ impl<Commitment: Clone + PartialEq, CodedData: Clone> Message<Commitment, CodedD
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::erase_code_methods::CodedData;
-    use curve25519_dalek::{scalar::Scalar, ristretto::RistrettoPoint};
     use crate::commitments::CodedPiece;
+    use crate::erase_code_methods::CodedData;
+    use curve25519_dalek::{ristretto::RistrettoPoint, scalar::Scalar};
 
     fn create_dummy_coded_piece() -> CodedPiece<Scalar> {
-        let data = vec![Scalar::from(1u8); 16]; 
+        let data = vec![Scalar::from(1u8); 16];
         let coefficients = vec![Scalar::from(2u8); 16];
         CodedPiece { data, coefficients }
     }
 
     fn create_dummy_commitment() -> Vec<RistrettoPoint> {
-        vec![RistrettoPoint::default(); 16] 
+        vec![RistrettoPoint::default(); 16]
     }
 
     #[test]
@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn test_message_different_commitment_types() {
         let piece = CodedData::RS(vec![1u8; 512]);
-        let commitment = vec![0u8; 32]; 
+        let commitment = vec![0u8; 32];
         let source_id = 3;
 
         let message = Message::new(piece.clone(), commitment.clone(), source_id);

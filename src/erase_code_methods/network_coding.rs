@@ -1,7 +1,7 @@
 use crate::{
-    commitments::{Committer, CodedPiece},
-    utils::rlnc::{NetworkEncoder, NetworkDecoder, NetworkRecoder, RLNCError},
+    commitments::{CodedPiece, Committer},
     networks::ErasureCoder,
+    utils::rlnc::{NetworkDecoder, NetworkEncoder, NetworkRecoder},
 };
 use curve25519_dalek::scalar::Scalar;
 use thiserror::Error;
@@ -19,13 +19,22 @@ pub enum NetworkCodingError {
 }
 
 pub struct RLNCErasureCoder<'a, C: Committer<Scalar = Scalar>> {
-    encoder: NetworkEncoder<'a, C>,
-    decoder: NetworkDecoder<'a, C>,
-    recoder: NetworkRecoder,
+    pub encoder: NetworkEncoder<'a, C>,
+    pub decoder: NetworkDecoder<'a, C>,
+    pub recoder: NetworkRecoder,
 }
 
 impl<'a, C: Committer<Scalar = Scalar>> RLNCErasureCoder<'a, C> {
-    pub fn new(committer: &'a C, data: Option<Vec<u8>>, num_chunks: usize) -> Result<Self, NetworkCodingError> {
+    pub fn new(
+        committer: &'a C,
+        data: Option<Vec<u8>>,
+        num_chunks: usize,
+    ) -> Result<Self, NetworkCodingError> {
+        println!(
+            "Creating RLNCErasureCoder with num_chunks: {}, data_len: {:?}",
+            num_chunks,
+            data.as_ref().map(|d| d.len())
+        );
         let encoder = NetworkEncoder::new(committer, data, num_chunks)
             .map_err(|e| NetworkCodingError::EncodingFailed(e.to_string()))?;
         let decoder = NetworkDecoder::new(committer, num_chunks);
@@ -44,30 +53,44 @@ impl<'a, C: Committer<Scalar = Scalar>> ErasureCoder<C> for RLNCErasureCoder<'a,
     type Commitment = C::Commitment;
 
     fn encode(&self) -> Result<Self::CodedData, Self::Error> {
-        self.encoder.encode()
+        self.encoder
+            .encode()
             .map_err(|e| NetworkCodingError::EncodingFailed(e.to_string()))
     }
 
     fn decode(&mut self, piece: &Self::CodedData) -> Result<(), Self::Error> {
-        self.decoder.decode(piece, &self.encoder.get_commitment()
-            .map_err(|e| NetworkCodingError::EncodingFailed(e.to_string()))?)
+        self.decoder
+            .decode(
+                piece,
+                &self
+                    .encoder
+                    .get_commitment()
+                    .map_err(|e| NetworkCodingError::EncodingFailed(e.to_string()))?,
+            )
             .map_err(|e| NetworkCodingError::DecodingFailed(e.to_string()))
     }
 
     fn recode(&mut self, pieces: &[Self::CodedData]) -> Result<Self::CodedData, Self::Error> {
         let pieces_converted: Vec<CodedPiece<Scalar>> = pieces.to_vec();
-        self.recoder.update_packets(pieces_converted)
+        self.recoder
+            .update_packets(pieces_converted)
             .map_err(|e| NetworkCodingError::InvalidPiece(e.to_string()))?;
         Ok(self.recoder.recode())
     }
 
-    fn verify(&self, piece: &Self::CodedData, commitment: &C::Commitment) -> Result<(), Self::Error> {
-        self.decoder.verify_coded_piece(piece, commitment)
+    fn verify(
+        &self,
+        piece: &Self::CodedData,
+        commitment: &C::Commitment,
+    ) -> Result<(), Self::Error> {
+        self.decoder
+            .verify_coded_piece(piece, commitment)
             .map_err(|e| NetworkCodingError::InvalidPiece(e.to_string()))
     }
 
     fn get_decoded_data(&self) -> Result<Vec<u8>, Self::Error> {
-        self.decoder.get_decoded_data()
+        self.decoder
+            .get_decoded_data()
             .map_err(|e| NetworkCodingError::DecodingFailed(e.to_string()))
     }
 
@@ -83,8 +106,8 @@ impl<'a, C: Committer<Scalar = Scalar>> ErasureCoder<C> for RLNCErasureCoder<'a,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use curve25519_dalek::{scalar::Scalar, ristretto::RistrettoPoint};
     use crate::utils::ristretto::{block_to_chunks, chunk_to_scalars};
+    use curve25519_dalek::{ristretto::RistrettoPoint, scalar::Scalar};
 
     #[derive(Debug, thiserror::Error)]
     pub enum MockCommitterError {
@@ -118,7 +141,11 @@ mod tests {
             Ok(vec![RistrettoPoint::default(); self.num_chunks])
         }
 
-        fn verify(&self, commitment: Option<&Self::Commitment>, piece: &CodedPiece<Self::Scalar>) -> bool {
+        fn verify(
+            &self,
+            commitment: Option<&Self::Commitment>,
+            piece: &CodedPiece<Self::Scalar>,
+        ) -> bool {
             if let Some(commitment) = commitment {
                 commitment.len() == self.num_chunks && piece.data.len() == 1
             } else {
@@ -128,7 +155,7 @@ mod tests {
     }
 
     fn create_dummy_data() -> Vec<u8> {
-        vec![1u8; 512] 
+        vec![1u8; 512]
     }
 
     #[test]
@@ -138,7 +165,11 @@ mod tests {
         let num_chunks = 16;
 
         let coder = RLNCErasureCoder::new(&committer, Some(data), num_chunks);
-        assert!(coder.is_ok(), "Failed to create RLNCErasureCoder with valid data: {:?}", coder.err());
+        assert!(
+            coder.is_ok(),
+            "Failed to create RLNCErasureCoder with valid data: {:?}",
+            coder.err()
+        );
         let coder = coder.unwrap();
         assert_eq!(coder.get_piece_count(), num_chunks);
     }
@@ -149,7 +180,11 @@ mod tests {
         let num_chunks = 16;
 
         let coder = RLNCErasureCoder::new(&committer, None, num_chunks);
-        assert!(coder.is_ok(), "Failed to create RLNCErasureCoder without data: {:?}", coder.err());
+        assert!(
+            coder.is_ok(),
+            "Failed to create RLNCErasureCoder without data: {:?}",
+            coder.err()
+        );
         let coder = coder.unwrap();
         assert_eq!(coder.get_piece_count(), num_chunks);
     }
@@ -164,8 +199,16 @@ mod tests {
         let piece = coder.encode();
         assert!(piece.is_ok(), "Failed to encode: {:?}", piece.err());
         let piece = piece.unwrap();
-        assert_eq!(piece.data.len(), 1, "Encoded piece data length should be 16 scalars");
-        assert_eq!(piece.coefficients.len(), num_chunks, "Encoded piece coefficients length should match num_chunks");
+        assert_eq!(
+            piece.data.len(),
+            1,
+            "Encoded piece data length should be 16 scalars"
+        );
+        assert_eq!(
+            piece.coefficients.len(),
+            num_chunks,
+            "Encoded piece coefficients length should match num_chunks"
+        );
     }
 
     #[test]
@@ -175,7 +218,10 @@ mod tests {
         let num_chunks = 16;
 
         let mut coder = RLNCErasureCoder::new(&committer, Some(data.clone()), num_chunks).unwrap();
-        let commitment = coder.encoder.get_commitment().expect("Failed to get commitment");
+        let commitment = coder
+            .encoder
+            .get_commitment()
+            .expect("Failed to get commitment");
 
         // Tạo và decode đủ số piece cần thiết
         for _ in 0..num_chunks {
@@ -184,21 +230,34 @@ mod tests {
             assert!(result.is_ok(), "Failed to decode: {:?}", result.err());
         }
 
-        assert!(coder.is_decoded(), "Should be decoded after receiving enough pieces");
+        assert!(
+            coder.is_decoded(),
+            "Should be decoded after receiving enough pieces"
+        );
         let decoded_data = coder.get_decoded_data();
-        assert!(decoded_data.is_ok(), "Failed to get decoded data: {:?}", decoded_data.err());
+        assert!(
+            decoded_data.is_ok(),
+            "Failed to get decoded data: {:?}",
+            decoded_data.err()
+        );
 
         // Kiểm tra dữ liệu giải mã
         let decoded_data = decoded_data.unwrap();
-        let original_chunks = block_to_chunks(&data, num_chunks).unwrap()
+        let original_chunks = block_to_chunks(&data, num_chunks)
+            .unwrap()
             .into_iter()
             .flat_map(|chunk| chunk_to_scalars(chunk).unwrap())
             .collect::<Vec<Scalar>>();
-        let decoded_chunks = block_to_chunks(&decoded_data, num_chunks).unwrap()
+        let decoded_chunks = block_to_chunks(&decoded_data, num_chunks)
+            .unwrap()
             .into_iter()
             .flat_map(|chunk| chunk_to_scalars(chunk).unwrap())
             .collect::<Vec<Scalar>>();
-        assert_eq!(original_chunks.len(), decoded_chunks.len(), "Decoded data length mismatch");
+        assert_eq!(
+            original_chunks.len(),
+            decoded_chunks.len(),
+            "Decoded data length mismatch"
+        );
         // Lưu ý: So sánh chính xác original_chunks và decoded_chunks có thể cần điều chỉnh logic trong NetworkDecoder
     }
 
@@ -215,9 +274,15 @@ mod tests {
             assert!(coder.decode(&piece).is_ok(), "Failed to decode piece");
         }
 
-        assert!(!coder.is_decoded(), "Should not be decoded with insufficient pieces");
+        assert!(
+            !coder.is_decoded(),
+            "Should not be decoded with insufficient pieces"
+        );
         let decoded_data = coder.get_decoded_data();
-        assert!(matches!(decoded_data, Err(NetworkCodingError::DecodingFailed(_))), "Expected DecodingFailed error");
+        assert!(
+            matches!(decoded_data, Err(NetworkCodingError::DecodingFailed(_))),
+            "Expected DecodingFailed error"
+        );
     }
 
     #[test]
@@ -233,10 +298,22 @@ mod tests {
         }
 
         let recoded_piece = coder.recode(&pieces);
-        assert!(recoded_piece.is_ok(), "Failed to recode: {:?}", recoded_piece.err());
+        assert!(
+            recoded_piece.is_ok(),
+            "Failed to recode: {:?}",
+            recoded_piece.err()
+        );
         let recoded_piece = recoded_piece.unwrap();
-        assert_eq!(recoded_piece.data.len(), 1, "Recoded piece data length should be 16 scalars");
-        assert_eq!(recoded_piece.coefficients.len(), num_chunks, "Recoded piece coefficients length should match num_chunks");
+        assert_eq!(
+            recoded_piece.data.len(),
+            1,
+            "Recoded piece data length should be 16 scalars"
+        );
+        assert_eq!(
+            recoded_piece.coefficients.len(),
+            num_chunks,
+            "Recoded piece coefficients length should match num_chunks"
+        );
     }
 
     #[test]
@@ -264,6 +341,9 @@ mod tests {
         let invalid_commitment = vec![RistrettoPoint::default(); num_chunks + 1]; // Commitment sai kích thước
 
         let result = coder.verify(&piece, &invalid_commitment);
-        assert!(matches!(result, Err(NetworkCodingError::InvalidPiece(_))), "Expected InvalidPiece error");
+        assert!(
+            matches!(result, Err(NetworkCodingError::InvalidPiece(_))),
+            "Expected InvalidPiece error"
+        );
     }
 }

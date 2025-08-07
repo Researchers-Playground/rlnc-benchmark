@@ -46,11 +46,15 @@ fn main() {
 
     // <BEGIN: RLNC create commitment one block>
     let committer = PedersenCommitter::new(chunk_size);
-    let shreds = extended_matrix.data().chunks(shreds_size).collect::<Vec<_>>();
+    let shreds = extended_matrix
+        .data()
+        .chunks(shreds_size)
+        .collect::<Vec<_>>();
     let shreds_encoders = shreds
         .iter()
         .map(|shred| {
-            let encoder = NetworkEncoder::new(&committer, Some(shred.to_vec()), num_chunks).unwrap();
+            let encoder =
+                NetworkEncoder::new(&committer, Some(shred.to_vec()), num_chunks).unwrap();
             encoder
         })
         .collect::<Vec<_>>();

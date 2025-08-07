@@ -75,7 +75,6 @@ impl DiscreteLogCommitter {
             params,
         })
     }
-    
 
     pub fn from_keys(
         params: DiscreteLogParams,
@@ -136,7 +135,8 @@ impl DiscreteLogCommitter {
             .iter()
             .map(|&alpha| RISTRETTO_BASEPOINT_POINT * alpha)
             .collect();
-        let orthogonal_vector = Self::find_orthogonal_vector_implicit(params, original_packets, rng)?;
+        let orthogonal_vector =
+            Self::find_orthogonal_vector_implicit(params, original_packets, rng)?;
         let mut signature_vector: Vec<Scalar> = Vec::new();
         for (&u_i, &alpha_i) in orthogonal_vector.iter().zip(alphas.iter()) {
             let alpha_inv = alpha_i.invert();
@@ -154,13 +154,13 @@ impl DiscreteLogCommitter {
     ) -> Result<Vec<Scalar>, DiscreteLogError> {
         let m = params.original_dim;
         let n = params.total_dim;
-        
+
         if m >= n {
             return Err(DiscreteLogError::InsufficientRank);
         }
 
         let mut orthogonal = vec![Scalar::ZERO; n];
-        
+
         // Set random values for data part (columns m..n)
         let mut has_nonzero = false;
         for i in m..n {
@@ -170,13 +170,13 @@ impl DiscreteLogCommitter {
                 has_nonzero = true;
             }
         }
-        
+
         if !has_nonzero {
             orthogonal[m] = Scalar::ONE;
         }
-        
+
         // For implicit [I|D] structure, each row i has:
-        // - Identity part: 1 at position i, 0 elsewhere  
+        // - Identity part: 1 at position i, 0 elsewhere
         // - Data part: packets[i]
         // So dot product with orthogonal[0..m] | orthogonal[m..n] is:
         // orthogonal[i] + sum(packets[i][j] * orthogonal[m+j] for j in 0..data_dim)
@@ -187,7 +187,7 @@ impl DiscreteLogCommitter {
             }
             orthogonal[i] = -data_sum; // Make dot product zero
         }
-        
+
         #[cfg(debug_assertions)]
         {
             // Verify orthogonality for implicit structure
@@ -196,13 +196,17 @@ impl DiscreteLogCommitter {
                 for (j, &data_val) in data_packet.iter().enumerate() {
                     dot_prod += data_val * orthogonal[m + j];
                 }
-                debug_assert_eq!(dot_prod, Scalar::ZERO, "Orthogonality verification failed for packet {}", packet_idx);
+                debug_assert_eq!(
+                    dot_prod,
+                    Scalar::ZERO,
+                    "Orthogonality verification failed for packet {}",
+                    packet_idx
+                );
             }
         }
-        
+
         Ok(orthogonal)
     }
-
 
     pub fn generators(&self) -> &[RistrettoPoint] {
         &self.generators
@@ -285,13 +289,12 @@ impl Committer for DiscreteLogCommitter {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{rngs::StdRng, SeedableRng};
-    use crate::utils::ristretto::{random_u8_slice, chunk_to_scalars};
+    use crate::utils::ristretto::{chunk_to_scalars, random_u8_slice};
     use crate::utils::rlnc::{NetworkDecoder, NetworkEncoder};
+    use rand::{rngs::StdRng, SeedableRng};
 
     #[test]
     fn test_discrete_log_committer_creation() {
@@ -320,12 +323,12 @@ mod tests {
             .collect();
 
         let committer = DiscreteLogCommitter::new(&data_chunks, &mut rng).unwrap();
-        
+
         // Test original packets with implicit identity structure
         for (i, data_chunk) in data_chunks.iter().enumerate() {
             let mut coding_vector = vec![Scalar::ZERO; num_packets];
             coding_vector[i] = Scalar::ONE; // Identity part for this packet
-            
+
             let coded_piece = CodedPiece {
                 coefficients: coding_vector,
                 data: data_chunk.clone(),
@@ -344,7 +347,7 @@ mod tests {
             .chunks(data_per_packet * 32)
             .map(|chunk| chunk_to_scalars(chunk).unwrap())
             .collect();
-            
+
         let committer = DiscreteLogCommitter::new(&data_chunks, &mut rng).unwrap();
         let encoder = NetworkEncoder::new(&committer, Some(data), num_packets).unwrap();
         let coded_piece = encoder.encode().unwrap();
@@ -352,7 +355,9 @@ mod tests {
         assert!(committer.verify_signature(&coded_piece));
 
         let decoder = NetworkDecoder::new(&committer, num_packets);
-        let verify_result = decoder.verify_coded_piece(&coded_piece, &commitment).is_ok();
+        let verify_result = decoder
+            .verify_coded_piece(&coded_piece, &commitment)
+            .is_ok();
         assert!(verify_result);
     }
 
@@ -392,15 +397,16 @@ mod tests {
         let num_packets = 3;
         let data_per_packet = 4;
         let params = DiscreteLogParams::new(num_packets, data_per_packet);
-        
+
         let data = random_u8_slice(num_packets * data_per_packet * 32);
         let data_chunks: Vec<Vec<Scalar>> = data
             .chunks(data_per_packet * 32)
             .map(|chunk| chunk_to_scalars(chunk).unwrap())
             .collect();
-            
+
         // Test the implicit orthogonal vector finding
-        let result = DiscreteLogCommitter::find_orthogonal_vector_implicit(&params, &data_chunks, &mut rng);
+        let result =
+            DiscreteLogCommitter::find_orthogonal_vector_implicit(&params, &data_chunks, &mut rng);
         assert!(result.is_ok());
 
         if let Ok(orthogonal) = result {

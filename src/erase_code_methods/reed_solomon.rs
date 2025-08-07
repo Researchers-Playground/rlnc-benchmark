@@ -1,13 +1,9 @@
-use reed_solomon_erasure::galois_8::ReedSolomon;
-use rand::Rng;
-use thiserror::Error;
-use crate::{
-    commitments::Committer,
-    networks::ErasureCoder,
-    utils::ristretto::chunk_to_scalars,
-};
+use crate::{commitments::Committer, networks::ErasureCoder, utils::ristretto::chunk_to_scalars};
 use curve25519_dalek::scalar::Scalar;
+use rand::Rng;
+use reed_solomon_erasure::galois_8::ReedSolomon;
 use std::marker::PhantomData;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum RSError {
@@ -34,9 +30,16 @@ pub struct RSErasureCoder<C: Committer<Scalar = Scalar>> {
 }
 
 impl<C: Committer<Scalar = Scalar>> RSErasureCoder<C> {
-    pub fn new(data: Vec<u8>, num_data_shares: usize, num_parity_shares: usize, share_size: usize) -> Result<Self, RSError> {
+    pub fn new(
+        data: Vec<u8>,
+        num_data_shares: usize,
+        num_parity_shares: usize,
+        share_size: usize,
+    ) -> Result<Self, RSError> {
         if data.len() % num_data_shares != 0 {
-            return Err(RSError::EncodingFailed("Data length not divisible by num_data_shares".to_string()));
+            return Err(RSError::EncodingFailed(
+                "Data length not divisible by num_data_shares".to_string(),
+            ));
         }
         let rs = ReedSolomon::new(num_data_shares, num_parity_shares)
             .map_err(|e| RSError::EncodingFailed(e.to_string()))?;
@@ -78,7 +81,8 @@ impl<C: Committer<Scalar = Scalar>> ErasureCoder<C> for RSErasureCoder<C> {
         if piece.len() != self.share_size {
             return Err(RSError::InvalidShare("Invalid share size".to_string()));
         }
-        self.received_shares.push((self.received_shares.len(), piece.clone()));
+        self.received_shares
+            .push((self.received_shares.len(), piece.clone()));
         Ok(())
     }
 
@@ -91,9 +95,12 @@ impl<C: Committer<Scalar = Scalar>> ErasureCoder<C> for RSErasureCoder<C> {
         Ok(pieces[index].clone())
     }
 
-    fn verify(&self, piece: &Self::CodedData, commitment: &C::Commitment) -> Result<(), Self::Error> {
-        let scalars = chunk_to_scalars(piece)
-            .map_err(|e| RSError::InvalidShare(e.to_string()))?;
+    fn verify(
+        &self,
+        piece: &Self::CodedData,
+        _commitment: &C::Commitment,
+    ) -> Result<(), Self::Error> {
+        let _scalars = chunk_to_scalars(piece).map_err(|e| RSError::InvalidShare(e.to_string()))?;
         // Placeholder: Implement commitment verification
         Ok(())
     }

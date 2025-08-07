@@ -15,12 +15,11 @@ impl<S> CodedPiece<S> {
     }
 }
 
-
 pub trait Committer {
-  type Scalar: Clone + std::ops::Mul<Output = Self::Scalar> + std::iter::Sum + From<u8>;
-  type Commitment: Clone + PartialEq;
-  type Error: Error;
+    type Scalar: Clone + std::ops::Mul<Output = Self::Scalar> + std::iter::Sum + From<u8>;
+    type Commitment: Clone + PartialEq;
+    type Error: Error;
 
-  fn commit(&self, chunks: &Vec<Vec<Scalar>>) -> Result<Self::Commitment, Self::Error>;
-  fn verify(&self, commitment: Option<&Self::Commitment>, piece: &CodedPiece<Scalar>) -> bool;
+    fn commit(&self, chunks: &Vec<Vec<Scalar>>) -> Result<Self::Commitment, Self::Error>;
+    fn verify(&self, commitment: Option<&Self::Commitment>, piece: &CodedPiece<Scalar>) -> bool;
 }

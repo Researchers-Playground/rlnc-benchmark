@@ -1,10 +1,9 @@
-use crate::commitments::{Committer, CodedPiece};
+use crate::commitments::{CodedPiece, Committer};
 use crate::utils::matrix::Echelon;
 use crate::utils::ristretto::{block_to_chunks, chunk_to_scalars};
 use curve25519_dalek::Scalar;
 use rand::Rng;
 use thiserror::Error;
-
 
 #[derive(Error, Debug)]
 pub enum RLNCError {
@@ -15,7 +14,7 @@ pub enum RLNCError {
     #[error("Decoding not complete")]
     DecodingNotComplete,
     #[error("Invalid data: {0}")]
-    InvalidData(String)
+    InvalidData(String),
 }
 
 fn generate_random_coefficients(length: usize) -> Vec<Scalar> {
@@ -82,7 +81,9 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkEncoder<'a, C> {
         if self.chunks.is_empty() {
             return Err("No chunks available for commitments".to_string());
         }
-        self.committer.commit(&self.chunks).map_err(|_| "Commitment failed".to_string())
+        self.committer
+            .commit(&self.chunks)
+            .map_err(|_| "Commitment failed".to_string())
     }
 
     pub fn get_chunks(&self) -> Vec<Vec<Scalar>> {
@@ -130,7 +131,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         self.commitment.clone()
     }
 
-    pub fn check_commitment(&self, commitment: &C::Commitment) -> Result<(), String> 
+    pub fn check_commitment(&self, commitment: &C::Commitment) -> Result<(), String>
     where
         C::Commitment: PartialEq + Clone,
     {
@@ -158,7 +159,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         &mut self,
         coded_piece: &CodedPiece<C::Scalar>,
         commitment: &C::Commitment,
-    ) -> Result<(), RLNCError> 
+    ) -> Result<(), RLNCError>
     where
         C::Commitment: Clone,
     {
@@ -259,7 +260,7 @@ impl<S: Clone> NetworkRecoder<S> {
         Ok(())
     }
 
-    pub fn recode(&self) -> CodedPiece<S> 
+    pub fn recode(&self) -> CodedPiece<S>
     where
         S: Copy + std::ops::Mul<Output = S> + std::iter::Sum + From<u8>,
     {
@@ -310,7 +311,9 @@ impl NetworkRecoder<Scalar> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{commitments::ristretto::pedersen::PedersenCommitter, utils::ristretto::random_u8_slice};
+    use crate::{
+        commitments::ristretto::pedersen::PedersenCommitter, utils::ristretto::random_u8_slice,
+    };
 
     use super::*;
 

@@ -52,10 +52,12 @@ impl Committer for PedersenCommitter {
     fn commit(&self, chunks: &Vec<Vec<Self::Scalar>>) -> Result<Self::Commitment, Self::Error> {
         chunks
             .iter()
-            .map(|chunk| self.commit(chunk).map_err(|e| match e {
-                PedersenError::InvalidChunkSize(msg) => PedersenError::InvalidChunkSize(msg),
-                PedersenError::CommitFailed(msg) => PedersenError::CommitFailed(msg),
-            }))
+            .map(|chunk| {
+                self.commit(chunk).map_err(|e| match e {
+                    PedersenError::InvalidChunkSize(msg) => PedersenError::InvalidChunkSize(msg),
+                    PedersenError::CommitFailed(msg) => PedersenError::CommitFailed(msg),
+                })
+            })
             .collect()
     }
 
@@ -86,7 +88,7 @@ mod tests {
     #[test]
     fn test_pedersen_commit() {
         let committer = PedersenCommitter::new(4); // 4 generators
-        // Valid chunk: 32 bytes (1 Scalar)
+                                                   // Valid chunk: 32 bytes (1 Scalar)
         let chunk = vec![1u8; 32];
         let scalars = chunk_to_scalars(&chunk).expect("Failed to convert chunk to scalars");
         let commitment = committer.commit(&scalars).expect("Failed to commit");
@@ -97,7 +99,8 @@ mod tests {
 
         // Invalid chunk: too many scalars (5 Scalars > 4 generators)
         let invalid_chunk = vec![1u8; 32 * 5]; // 160 bytes -> 5 Scalars
-        let invalid_scalars = chunk_to_scalars(&invalid_chunk).expect("Failed to convert invalid chunk to scalars");
+        let invalid_scalars =
+            chunk_to_scalars(&invalid_chunk).expect("Failed to convert invalid chunk to scalars");
         let result = committer.commit(&invalid_scalars);
         assert!(matches!(result, Err(PedersenError::InvalidChunkSize(_))));
     }
