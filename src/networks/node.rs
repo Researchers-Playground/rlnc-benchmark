@@ -1,7 +1,7 @@
 use rand::Rng;
 use crate::{
     commitments::Committer,
-    erase_code_methods::{network_coding::RLNCErasureCoder, reed_solomon::RSErasureCoder, CodedData, ErasureCoderType, ErasureError}, utils::rlnc::RLNCError,
+    erase_code_methods::{network_coding::{NetworkCodingError, RLNCErasureCoder}, reed_solomon::RSErasureCoder, CodedData, ErasureCoderType, ErasureError},
 };
 use curve25519_dalek::{scalar::Scalar, ristretto::RistrettoPoint};
 
@@ -91,7 +91,7 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
     pub fn sample(&self) -> Result<&CodedShred, ErasureError> {
         let mut rng = rand::rng();
         if self.coded_block.is_empty() {
-            return Err(ErasureError::RLNC(RLNCError::InvalidPiece("No coded shreds available for sampling".to_string())));
+            return Err(ErasureError::RLNC(NetworkCodingError::InvalidPiece("No coded shreds available for sampling".to_string())));
         }
         let index = rng.random_range(0..self.coded_block.len());
         Ok(&self.coded_block[index])

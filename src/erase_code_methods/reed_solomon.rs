@@ -21,6 +21,7 @@ pub enum RSError {
     InsufficientShares,
 }
 
+// currently does not benchmark enviroment having this so consider the compability later
 pub struct RSErasureCoder<C: Committer<Scalar = Scalar>> {
     rs: ReedSolomon,
     data: Vec<u8>,
@@ -101,7 +102,7 @@ impl<C: Committer<Scalar = Scalar>> ErasureCoder<C> for RSErasureCoder<C> {
         if self.received_shares.len() < self.num_data_shares {
             return Err(RSError::InsufficientShares);
         }
-        let mut rs = self.rs.clone();
+        let rs = self.rs.clone();
         let mut shares = vec![None; self.num_data_shares + self.num_parity_shares];
         for (index, share) in self.received_shares.iter().take(self.num_data_shares) {
             shares[*index] = Some(share.clone());

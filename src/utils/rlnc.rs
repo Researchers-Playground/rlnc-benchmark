@@ -15,15 +15,7 @@ pub enum RLNCError {
     #[error("Decoding not complete")]
     DecodingNotComplete,
     #[error("Invalid data: {0}")]
-    InvalidData(String),
-    #[error("Encoding failed: {0}")]
-    EncodingFailed(String),
-    #[error("Decoding failed: {0}")]
-    DecodingFailed(String),
-    #[error("Invalid piece: {0}")]
-    InvalidPiece(String),
-    #[error("Insufficient pieces for decoding")]
-    InsufficientPieces,
+    InvalidData(String)
 }
 
 fn generate_random_coefficients(length: usize) -> Vec<Scalar> {
