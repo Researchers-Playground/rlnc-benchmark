@@ -85,7 +85,7 @@ impl<'a, C: Committer<Scalar = Scalar>> ErasureCoderType<'a, C> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum CodedData {
     RLNC(CodedPiece<Scalar>),
     RS(Vec<u8>),

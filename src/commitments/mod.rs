@@ -3,7 +3,7 @@ use std::error::Error;
 
 pub mod ristretto;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct CodedPiece<S = Scalar> {
     pub data: Vec<S>,
     pub coefficients: Vec<S>,

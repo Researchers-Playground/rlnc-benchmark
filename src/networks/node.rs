@@ -80,8 +80,6 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
 
     pub fn receive(&mut self, coded_shreds: Vec<CodedShred>) -> Result<(), ErasureError> {
         for shred in coded_shreds {
-            // Tạm thời bỏ qua verify commitment vì placeholder
-            // Nếu cần verify, thêm commitment vào Vec<CodedShred> và gọi verify
             self.erasure_coder.decode(&shred)?;
             self.coded_block.push(shred);
         }
