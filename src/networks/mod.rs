@@ -4,7 +4,6 @@ use crate::commitments::Committer;
 
 pub mod message;
 pub mod node;
-pub mod nodes;
 pub mod storage;
 
 pub trait ErasureCoder<C: Committer> {
