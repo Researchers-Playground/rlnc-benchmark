@@ -40,7 +40,7 @@ impl NetworkRecoder {
         let mixing: Vec<Scalar> = (0..n)
             .map(|_| Scalar::from(rng.random_range(1u8..=255u8)))
             .collect();
-        println!("Mixing coefficients: {:?}", mixing);
+        // println!("Mixing coefficients: {:?}", mixing);
 
         let data_len = collected[0].data.len(); // e.g., 32 for 32-byte chunks
         let coeffs_len = collected[0].coefficients.len(); // e.g., 4 for num_chunks
@@ -53,10 +53,10 @@ impl NetworkRecoder {
                     .zip(&collected)
                     .map(|(&coeff, piece)| {
                         let product = coeff * piece.data[i];
-                        println!(
-                            "Data contribution: coeff={:?}, piece.data[{}]={:?}, product={:?}",
-                            coeff, i, piece.data[i], product
-                        );
+                        // println!(
+                        //     "Data contribution: coeff={:?}, piece.data[{}]={:?}, product={:?}",
+                        //     coeff, i, piece.data[i], product
+                        // );
                         product
                     })
                     .sum();

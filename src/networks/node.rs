@@ -337,13 +337,8 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
                                 msg.shred_id,
                                 decoded_bytes.clone(),
                             );
-                            println!(
-                                "decoded shred id {:?}, value {:?}",
-                                msg.shred_id, decoded_bytes
-                            );
                         }
                         Err(error) => {
-                            println!("error on try_decode_shred {:?}", error)
                             // decoding incomplete or failed -> ignore for now
                         }
                     }
@@ -503,10 +498,26 @@ mod tests {
         let data = create_random_block(512);
         println!("Block data len: {}", data.len());
 
-        let mut source = Node::new(1, &committer, vec![2], num_shreds * (num_chunks + 2), num_shreds, num_chunks);
-        assert!(source.new_source(block_id, data.clone(), false, 512).is_ok());
+        let mut source = Node::new(
+            1,
+            &committer,
+            vec![2],
+            num_shreds * (num_chunks + 2),
+            num_shreds,
+            num_chunks,
+        );
+        assert!(source
+            .new_source(block_id, data.clone(), false, 512)
+            .is_ok());
 
-        let mut receiver = Node::new(2, &committer, vec![1], num_shreds * (num_chunks + 2), num_shreds, num_chunks);
+        let mut receiver = Node::new(
+            2,
+            &committer,
+            vec![1],
+            num_shreds * (num_chunks + 2),
+            num_shreds,
+            num_chunks,
+        );
 
         // Send and receive unique messages multiple times to ensure 4+ independent pieces
         for i in 0..num_shreds {
@@ -516,7 +527,10 @@ mod tests {
             assert!(!sent_msgs.is_empty(), "No messages sent at iteration {}", i);
             println!("Iteration {}: Sent {} messages", i, sent_msgs.len());
             for msg in &sent_msgs {
-                println!("Message: block_id={}, shred_id={}, piece_idx={}", msg.block_id, msg.shred_id, msg.piece_idx);
+                println!(
+                    "Message: block_id={}, shred_id={}, piece_idx={}",
+                    msg.block_id, msg.shred_id, msg.piece_idx
+                );
             }
 
             let result = receiver.receive_messages(sent_msgs);
@@ -528,13 +542,21 @@ mod tests {
             for sid in 0..num_shreds {
                 let indices = source.storage.list_piece_indices(block_id, sid);
                 if indices.len() >= 2 {
-                    let new_piece = source.recoder.recode(&source.storage, block_id, sid, &indices)
+                    let new_piece = source
+                        .recoder
+                        .recode(&source.storage, block_id, sid, &indices)
                         .expect("Recode failed");
                     let mut next_idx = indices.iter().max().unwrap_or(&0) + 1;
-                    while source.storage.get_coded_piece(block_id, sid, next_idx).is_some() {
+                    while source
+                        .storage
+                        .get_coded_piece(block_id, sid, next_idx)
+                        .is_some()
+                    {
                         next_idx += 1;
                     }
-                    source.storage.store_coded_piece(block_id, sid, next_idx, new_piece);
+                    source
+                        .storage
+                        .store_coded_piece(block_id, sid, next_idx, new_piece);
                 }
             }
         }
@@ -543,7 +565,12 @@ mod tests {
         for sid in 0..num_shreds {
             let indices = receiver.storage.list_piece_indices(block_id, sid);
             println!("Shred {} has {} pieces", sid, indices.len());
-            assert!(indices.len() >= num_chunks, "Not enough pieces for shred {}: {}", sid, indices.len());
+            assert!(
+                indices.len() >= num_chunks,
+                "Not enough pieces for shred {}: {}",
+                sid,
+                indices.len()
+            );
             if receiver.storage.get_decoded_shred(block_id, sid).is_some() {
                 println!("Shred {} decoded successfully", sid);
             } else {
@@ -561,71 +588,112 @@ mod tests {
             if reconstructed_data != data {
                 for i in 0..data.len() {
                     if reconstructed_data[i] != data[i] {
-                        println!("Difference at index {}: reconstructed = {}, original = {}", i, reconstructed_data[i], data[i]);
+                        println!(
+                            "Difference at index {}: reconstructed = {}, original = {}",
+                            i, reconstructed_data[i], data[i]
+                        );
                     }
                 }
             }
         }
         assert!(reconstructed.is_some(), "Reconstruction failed");
-        assert_eq!(reconstructed.unwrap(), data, "Reconstructed block does not match original");
+        assert_eq!(
+            reconstructed.unwrap(),
+            data,
+            "Reconstructed block does not match original"
+        );
     }
 
-    // #[test]
-    // fn test_send_receive_reconstruct_with_rs() {
-    //     const SHARE_SIZE: usize = 512;
-    //     const BLOCK_SIZE: usize = 2 * 1024 * 1024;
-    //     let k = ((BLOCK_SIZE / SHARE_SIZE) as f64).sqrt().ceil() as usize; // k=64
-    //     let committer = MockCommitter;
-    //     let block_id = 1;
-    //     let num_chunks = 16;
-    //     let data = create_random_block(BLOCK_SIZE);
+    #[test]
+    fn test_send_receive_reconstruct_with_rs_poc() {
+        const SHARE_SIZE: usize = 64; // nhỏ hơn 512
+        const BLOCK_SIZE: usize = 4 * 64 * SHARE_SIZE; // k=4 (vì sqrt( (BLOCK_SIZE / SHARE_SIZE) ) = 4)
+        let k = ((BLOCK_SIZE / SHARE_SIZE) as f64).sqrt().ceil() as usize; // k=4
+        let committer = MockCommitter;
+        let block_id = 1;
+        let num_chunks = 4; // nhỏ hơn 16
+        let data = create_random_block(BLOCK_SIZE);
 
-    //     // Tạo source node
-    //     let mut source = Node::new(1, &committer, vec![2], 10, k, num_chunks);
-    //     assert!(source.new_source(block_id, data.clone(), true, 512).is_ok());
+        // đủ để gửi tất cả pieces của tất cả shreds
+        let bw = k * (num_chunks + 2);
 
-    //     // Tạo receiver node
-    //     let mut receiver = Node::new(2, &committer, vec![1], 10, k, num_chunks);
+        let mut source = Node::new(1, &committer, vec![2], bw, k, num_chunks);
+        assert!(source
+            .new_source(block_id, data.clone(), true, SHARE_SIZE)
+            .is_ok());
 
-    //     // Source gửi messages
-    //     let messages = source.send(block_id, 1);
-    //     assert_eq!(messages.len(), 1);
-    //     let (_, sent_msgs) = messages[0].clone();
-    //     assert!(!sent_msgs.is_empty());
-    //     assert!(sent_msgs.len() <= 10);
+        let mut receiver = Node::new(2, &committer, vec![1], bw, k, num_chunks);
 
-    //     // Receiver nhận messages nhiều lần để đủ pieces
-    //     for _ in 0..num_chunks {
-    //         assert!(receiver.receive_messages(sent_msgs.clone()).is_ok());
-    //     }
+        // gửi 1 lần là đủ
+        let messages = source.send(block_id, 1);
+        assert_eq!(messages.len(), 1);
+        let (_, sent_msgs) = messages[0].clone();
+        assert!(!sent_msgs.is_empty());
 
-    //     // Kiểm tra reconstruct
-    //     let reconstructed = receiver.try_reconstruct_block(block_id, true);
-    //     assert!(reconstructed.is_some());
-    //     // Với RS, block tái tạo là ma trận mở rộng (4k^2 shares)
-    //     assert_eq!(reconstructed.unwrap().len(), 4 * k * k * SHARE_SIZE);
-    // }
+        assert!(receiver.receive_messages(sent_msgs).is_ok());
 
-    // #[test]
-    // fn test_receive_invalid_commitment() {
-    //     let committer = MockCommitter;
-    //     let block_id = 1;
-    //     let num_shreds = 4;
-    //     let num_chunks = 16;
-    //     let mut node = Node::new(1, &committer, vec![2], 10, num_shreds, num_chunks);
-    //     let data = create_random_block(2048);
-    //     assert!(node.new_source(block_id, data, false).is_ok());
+        // reconstruct block mở rộng (4*k^2*share_size)
+        let reconstructed = receiver.try_reconstruct_block(block_id, true);
+        assert!(reconstructed.is_some());
+        assert_eq!(reconstructed.unwrap().len(), 4 * k * k * SHARE_SIZE);
+    }
 
-    //     // Tạo message với commitment sai
-    //     let messages = node.send(block_id, 1);
-    //     let mut invalid_msgs = messages[0].1.clone();
-    //     if !invalid_msgs.is_empty() {
-    //         invalid_msgs[0].commitment = vec![]; // Commitment sai
-    //     }
+    #[test]
+    fn test_send_receive_reconstruct_with_rs_poc_equals_original() {
+        const SHARE_SIZE: usize = 64;
+        // Chọn k=4 ⇒ BLOCK_SIZE = k*k*SHARE_SIZE
+        const K: usize = 4;
+        const BLOCK_SIZE: usize = K * K * SHARE_SIZE;
+        let k = K;
+        let committer = MockCommitter;
+        let block_id = 1;
+        let num_chunks = 4; // cần >= rank để decode một shred
+        let data = create_random_block(BLOCK_SIZE); // không cần pad
 
-    //     // Kiểm tra receive thất bại
-    //     let result = node.receive_messages(invalid_msgs);
-    //     assert!(result.is_err());
-    //     assert!(result.unwrap_err().contains("verify failed"));
-    // }
+        // đủ băng thông để gửi (num_chunks+2) pieces cho MỖI shred trong 1 lần
+        let bw = k * (num_chunks + 2);
+
+        let mut source = Node::new(1, &committer, vec![2], bw, k, num_chunks);
+        assert!(source
+            .new_source(block_id, data.clone(), true, SHARE_SIZE)
+            .is_ok());
+
+        let mut receiver = Node::new(2, &committer, vec![1], bw, k, num_chunks);
+
+        // Gửi 1 lần là đủ
+        let messages = source.send(block_id, 1);
+        assert_eq!(messages.len(), 1);
+        let (_, sent_msgs) = messages[0].clone();
+        assert!(!sent_msgs.is_empty());
+
+        assert!(receiver.receive_messages(sent_msgs).is_ok());
+
+        // Reconstruct ra ma trận mở rộng 2k×2k
+        let reconstructed_ext = receiver
+            .try_reconstruct_block(block_id, true)
+            .expect("should reconstruct extended block");
+        assert_eq!(reconstructed_ext.len(), 4 * k * k * SHARE_SIZE);
+
+        // === Thu gọn 2k×2k -> k×k để so với dữ liệu gốc ===
+        // reconstructed_ext là row-major theo shares: tổng 2k * 2k shares, mỗi share SHARE_SIZE bytes
+        // Mỗi hàng có 2k shares ⇒ 2k * SHARE_SIZE bytes
+        let row_bytes = 2 * k * SHARE_SIZE;
+
+        let mut recovered_original = Vec::with_capacity(k * k * SHARE_SIZE);
+        for r in 0..k {
+            // offset đầu hàng r trong extended
+            let row_start = r * row_bytes;
+            // lấy k shares đầu tiên của hàng này (bỏ k shares parity cột)
+            let take_len = k * SHARE_SIZE;
+            recovered_original
+                .extend_from_slice(&reconstructed_ext[row_start..row_start + take_len]);
+        }
+
+        // So sánh với data gốc
+        assert_eq!(recovered_original.len(), BLOCK_SIZE);
+        assert_eq!(recovered_original, data, "Recovered original != input data");
+
+        println!("{:?}", data);
+        println!("{:?}", recovered_original);
+    }
 }

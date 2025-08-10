@@ -63,7 +63,6 @@ impl NetworkDecoder {
         }
 
         if pieces.len() < self.piece_count {
-            println!("go here pieces.len() < self.piece_count");
             return Err(RLNCError::DecodingNotComplete);
         }
 
@@ -83,10 +82,6 @@ impl NetworkDecoder {
         }
 
         if received_chunks.len() < self.piece_count {
-            println!(
-                "go here received_chunks.len() < self.piece_count, chunks lens {:?}",
-                received_chunks.len()
-            );
             return Err(RLNCError::DecodingNotComplete);
         }
 
