@@ -1,17 +1,16 @@
-use curve25519_dalek::scalar::Scalar;
-use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rlnc_benchmark::rlnc::storage::NodeStorage;
+
 use rlnc_benchmark::commitments::ristretto::pedersen::PedersenCommitter;
-use rlnc_benchmark::erase_code_methods::network_coding::{NetworkCodingError, RLNCErasureCoder};
 use rlnc_benchmark::networks::node::Node;
 use rlnc_benchmark::utils::blocks::create_random_block;
 use rlnc_benchmark::utils::bytes::bytes_to_human_readable;
 use rlnc_benchmark::utils::eds::{extended_data_share, FlatMatrix};
+
 use std::collections::HashMap;
 use std::time::Instant;
 use sysinfo::System;
 
-const ONE_MEGABYTE: usize = 1024 * 1024;
+use rlnc_benchmark::rlnc::storage::BlockId;
 
 struct NetworkConfig {
     num_nodes: usize,
@@ -49,18 +48,21 @@ struct BenchmarkResult {
     cpu_usage: f32,
 }
 
+/// Simulate network using the new Node API (Node::new_source, Node::new, Node::send, Node::receive_messages)
 fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> BenchmarkResult {
     const BLOCK_SIZE: usize = 128 * 1024; // 128KB
     const SHARE_SIZE: usize = 512;
+    // k used to compute number of shreds in original script (keeps same semantics)
     let k = (BLOCK_SIZE / SHARE_SIZE).isqrt(); // k=16
     let block = create_random_block(BLOCK_SIZE);
+
     println!(
         "Step 1: Block created - size: {} bytes, k: {}",
         block.len(),
         k
     );
 
-    // Create 2D erasure-coded matrix
+    // Create 2D erasure-coded matrix (unchanged from original)
     println!(
         "Step 2: Creating FlatMatrix with k={} ({}x{} matrix)",
         k, k, k
@@ -73,42 +75,43 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
         bytes_to_human_readable(extended_matrix.data().len())
     );
 
-    let mut nodes = HashMap::new();
+    // We'll use block_id = 0 for this run
+    let block_id: BlockId = 0;
 
-    // Khởi tạo source node with extended matrix data
-    nodes.insert(
+    // Build nodes map using the new Node API
+    let mut nodes: HashMap<usize, Node<PedersenCommitter>> = HashMap::new();
+
+    // 1) Create source node: new_source will split extended_data into shreds and produce per-shred RLNC-coded pieces + commitments in storage
+    // Node::new signature (id, committer, neighbors, bandwidth_limit, num_shreds, num_chunks_per_shred)
+    let mut source_node = Node::new(
         0,
-        Node::new_source(
-            0,
-            committer,
-            extended_matrix.data().to_vec(),
-            config.num_chunks,
-            config.num_shreds,
-            true, // Sử dụng RLNC
-            config.bandwidth_limit,
-        )
-        .expect("Step 3: Failed to create source node"),
+        committer,
+        Vec::new(),
+        config.bandwidth_limit,
+        config.num_shreds,
+        config.num_chunks,
     );
 
-    // Khởi tạo các node khác
+    source_node
+        .new_source(block_id, extended_matrix.data().to_vec(), true)
+        .expect("Step 3: Failed to create source node (new_source)");
+
+    nodes.insert(0, source_node);
+
+    // 2) Create other nodes (empty, no data)
     for id in 1..config.num_nodes {
-        let erasure_coder = rlnc_benchmark::erase_code_methods::ErasureCoderType::RLNC(
-            RLNCErasureCoder::new(committer, None, config.num_chunks)
-                .expect("Step 3: Failed to create RLNC coder"),
-        );
-        nodes.insert(
+        let node = Node::new(
             id,
-            Node::new(
-                id,
-                committer,
-                erasure_coder,
-                Vec::new(),
-                config.bandwidth_limit,
-            ),
+            committer,
+            Vec::new(),
+            config.bandwidth_limit,
+            config.num_shreds,
+            config.num_chunks,
         );
+        nodes.insert(id, node);
     }
 
-    // Khởi tạo neighbors
+    // 3) Setup neighbors (graph)
     for id in 0..config.num_nodes {
         let mut neighbors = Vec::new();
         for i in 1..=config.degree {
@@ -116,30 +119,40 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
             neighbors.push(neighbor_id);
         }
         println!("Step 4: Node {} neighbors: {:?}", id, neighbors);
-        let node = nodes.get_mut(&id).unwrap();
-        node.neighbors = neighbors;
+        if let Some(node) = nodes.get_mut(&id) {
+            node.neighbors = neighbors;
+        }
     }
 
+    // Metrics + loop state
     let start = Instant::now();
-    let mut round_count = 0;
-    let mut bandwidth_bytes = 0;
-    let mut cpu_usages = Vec::new();
+    let mut round_count: usize = 0;
+    let mut bandwidth_bytes: usize = 0;
+    let mut cpu_usages: Vec<f32> = Vec::new();
     let mut system = System::new_all();
 
-    // Lấy commitment từ source node
-    let commitment = nodes
+    // 4) For logging: fetch one example commitment length (per-shred commitment)
+    // We'll fetch commitment from source storage for shred 0 (source has already stored commitments in new_source)
+    let example_commitment_len = nodes
         .get(&0)
-        .and_then(|source| match &source.erasure_coder {
-            rlnc_benchmark::erase_code_methods::ErasureCoderType::RLNC(coder) => {
-                Some(coder.encoder.get_commitment())
-            }
-            _ => None,
-        })
-        .expect("Step 5: Source node is not RLNC")
-        .expect("Step 5: Failed to get commitment from source node");
-    println!("Step 5: Commitment obtained, length: {}", commitment.len());
+        .and_then(|n| n.storage.get_commitment(block_id, 0))
+        .map(|c| c.len())
+        .unwrap_or(0);
+    println!(
+        "Step 5: Example commitment obtained for shred 0, length: {}",
+        example_commitment_len
+    );
 
-    while !nodes.values().all(|node| node.erasure_coder.is_decoded()) {
+    // 5) Main rounds: run until all nodes have reconstructed the block
+    loop {
+        // Check termination: all nodes reconstructed the block (try_reconstruct_block returns Some)
+        let all_decoded = nodes
+            .values()
+            .all(|n| n.try_reconstruct_block(block_id, true).is_some());
+        if all_decoded {
+            break;
+        }
+
         round_count += 1;
         println!("Step 6: Starting round {}", round_count);
 
@@ -148,42 +161,34 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
         cpu_usages.push(cpu_usage);
 
         for _ in 0..config.aggressive {
-            let mut neighbor_msgs = Vec::new();
+            // collect messages to deliver in this micro-iteration
+            let mut neighbor_msgs: Vec<(usize, Vec<_>, usize)> = Vec::new();
             for id in 0..config.num_nodes {
                 if let Some(node) = nodes.get(&id) {
-                    if let Ok(messages) = node.send() {
-                        for (neighbor_id, shreds) in messages {
-                            for shred in &shreds {
-                                match shred {
-                                    rlnc_benchmark::erase_code_methods::CodedData::RLNC(piece) => {
-                                        println!(
-                                            "Step 7: Shred from node {} to {}: coefficients_len={:?}, data_len={}",
-                                            id, neighbor_id, piece.coefficients.len(), piece.data.len()
-                                        );
-                                        bandwidth_bytes +=
-                                            piece.data.len() * 32 + piece.coefficients.len() * 32;
-                                    }
-                                    rlnc_benchmark::erase_code_methods::CodedData::RS(data) => {
-                                        bandwidth_bytes += data.len();
-                                    }
-                                }
-                            }
-                            neighbor_msgs.push((neighbor_id, shreds, id));
+                    // Node::send returns Vec<(neighbor_id, Vec<Message<Commitment>>)>
+                    let outbound = node.send(block_id, id);
+                    for (neighbor_id, msgs) in outbound {
+                        // measure bandwidth for each message piece
+                        for msg in &msgs {
+                            // sized in bytes: data scalars * 32 + coeffs * 32
+                            let piece = &msg.piece;
+                            let bytes = piece.data.len() * 32 + piece.coefficients.len() * 32;
+                            bandwidth_bytes += bytes;
                         }
+                        neighbor_msgs.push((neighbor_id, msgs, id));
                     }
                 }
             }
 
-            for (neighbor_id, shreds, source_id) in neighbor_msgs {
+            // deliver collected messages
+            for (neighbor_id, msgs, source_id) in neighbor_msgs.drain(..) {
                 if let Some(neighbor) = nodes.get_mut(&neighbor_id) {
-                    neighbor
-                        .receive(shreds, Some(&commitment))
-                        .unwrap_or_else(|e| {
-                            println!(
-                                "Step 8: Node {} failed to receive from {}: {:?}",
-                                neighbor_id, source_id, e
-                            );
-                        });
+                    neighbor.receive_messages(msgs).unwrap_or_else(|e| {
+                        println!(
+                            "Step 8: Node {} failed to receive from {}: {:?}",
+                            neighbor_id, source_id, e
+                        );
+                    });
                 }
             }
         }
@@ -191,13 +196,24 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
         // Log decoding progress
         for id in 0..config.num_nodes {
             if let Some(node) = nodes.get(&id) {
+                let decoded = node.try_reconstruct_block(block_id, true).is_some();
+                let stored_pieces = node
+                    .storage
+                    .pieces_index
+                    .get(&(block_id, 0))
+                    .map(|s| s.len())
+                    .unwrap_or(0);
                 println!(
-                    "Step 9: Node {}: decoded={}, coded_block_size={}",
-                    id,
-                    node.erasure_coder.is_decoded(),
-                    node.coded_block.len()
+                    "Step 9: Node {}: decoded={}, stored_pieces_example_shred0={}",
+                    id, decoded, stored_pieces
                 );
             }
+        }
+
+        // safety: prevent infinite loop in pathological cases
+        if round_count > 10000 {
+            println!("Terminating after excessive rounds");
+            break;
         }
     }
 
@@ -217,18 +233,17 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
 }
 
 fn main() {
-    const BLOCK_SIZE: usize = 128 * 1024; // 128KB
-    const SHARE_SIZE: usize = 512; // Same as reference
-    let k: usize = (BLOCK_SIZE / SHARE_SIZE).isqrt(); // k=16
-    let num_chunks = 8;
-    let num_shreds = k; // 16
-    let extended_size = 4 * BLOCK_SIZE; // 32x32 matrix = 524,288 bytes
-    let chunk_size_in_scalars = (extended_size / num_chunks) / 32; // 524,288 / 8 / 32 = 2,048 scalars
+    // Giảm mạnh để chạy nhanh hơn
+    const BLOCK_SIZE: usize = 4 * 1024; // 4KB thay vì 128KB
+    const SHARE_SIZE: usize = 512; // Giữ nguyên như reference
+    let k: usize = (BLOCK_SIZE / SHARE_SIZE).isqrt(); // k=2
+    let num_chunks = 2; // giảm từ 8 xuống 2
+    let num_shreds = k; // 2
+    let chunk_size_in_scalars = SHARE_SIZE / 32; // 512 / 32 = 16 scalars
+    let committer = PedersenCommitter::new(chunk_size_in_scalars);
 
-    // Initialize PedersenCommitter with enough generators
-    let committer = PedersenCommitter::new(chunk_size_in_scalars); // n = 2,048
-
-    let configs = vec![NetworkConfig::new(5, 3, 1, num_chunks, num_shreds, 8)];
+    // Chỉ 1 config nhỏ để chạy nhanh
+    let configs = vec![NetworkConfig::new(2, 1, 1, num_chunks, num_shreds, 1)];
 
     for config in configs {
         let result = simulate_network(&config, &committer);
@@ -251,3 +266,4 @@ fn main() {
         );
     }
 }
+

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use crate::commitments::{CodedPiece, Committer};
 use curve25519_dalek::{
     constants::RISTRETTO_BASEPOINT_POINT,

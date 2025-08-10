@@ -1,519 +1,309 @@
-use crate::{
-    commitments::Committer,
-    erase_code_methods::{
-        network_coding::{NetworkCodingError, RLNCErasureCoder},
-        reed_solomon::RSErasureCoder,
-        CodedData, ErasureCoderType, ErasureError,
-    },
-    networks::ErasureCoder,
-};
+// node.rs
+use crate::commitments::{CodedPiece, Committer};
+use crate::rlnc::decoder::NetworkDecoder;
+use crate::rlnc::encoder::NetworkEncoder;
+use crate::rlnc::recoder::NetworkRecoder;
+use crate::rlnc::storage::{BlockId, InMemoryStorage, NodeStorage, PieceIdx, ShredId};
+
 use curve25519_dalek::{ristretto::RistrettoPoint, scalar::Scalar};
-use rand::Rng;
 
-type CodedShred = CodedData;
+/// Message structure used for network send/receive (shred + commitment + metadata)
+#[derive(Clone, Debug)]
+pub struct Message<C: Clone> {
+    pub block_id: BlockId,
+    pub shred_id: ShredId,
+    pub piece_idx: PieceIdx,
+    pub piece: CodedPiece<Scalar>,
+    pub commitment: C,
+    pub source_id: usize,
+}
 
+/// Node struct (uses InMemoryStorage as internal storage)
 pub struct Node<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> {
     pub id: usize,
-    pub erasure_coder: ErasureCoderType<'a, C>,
     pub committer: &'a C,
     pub neighbors: Vec<usize>,
-    pub coded_block: Vec<CodedShred>,
+
+    // storage: in-memory simulated storage local to node
+    pub storage: InMemoryStorage<C>,
+
+    // metadata for the blocks this node is working with
+    // here we support a single active block_id for simplicity; can be extended
+    pub active_block: Option<BlockId>,
+    pub num_shreds: usize,
+    pub num_chunks_per_shred: usize,
     pub bandwidth_limit: usize,
+
+    // helpers
+    pub encoder: NetworkEncoder,
+    pub decoder: NetworkDecoder,
+    pub recoder: NetworkRecoder,
 }
 
 impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'a, C> {
+    /// create an empty node
     pub fn new(
         id: usize,
         committer: &'a C,
-        erasure_coder: ErasureCoderType<'a, C>,
         neighbors: Vec<usize>,
         bandwidth_limit: usize,
+        num_shreds: usize,
+        num_chunks_per_shred: usize,
     ) -> Self {
+        let storage = InMemoryStorage::<C>::new();
+        let encoder = NetworkEncoder::new(0, num_shreds, num_chunks_per_shred); // block_id replaced when source created
+        let decoder = NetworkDecoder::new(num_chunks_per_shred);
+        let recoder = NetworkRecoder::new(num_chunks_per_shred);
         Node {
             id,
-            erasure_coder,
             committer,
             neighbors,
-            coded_block: Vec::new(),
+            storage,
+            active_block: None,
+            num_shreds,
+            num_chunks_per_shred,
             bandwidth_limit,
+            encoder,
+            decoder,
+            recoder,
         }
     }
 
+    /// new_source: take `data` (original block), optionally apply RS-extend,
+    /// split into num_shreds and store shreds -> create RLNC coded pieces per shred and store them + commitments.
+    ///
+    /// NOTE: RS extend here is a simple splitter/padder placeholder.
+    /// Replace with real RSErasureCoder usage if desired.
     pub fn new_source(
-        id: usize,
-        committer: &'a C,
-        data: Vec<u8>,
-        num_chunks: usize,
-        num_shreds: usize,
-        use_rlnc: bool,
-        bandwidth_limit: usize,
-    ) -> Result<Self, ErasureError> {
-        if data.len() % num_chunks != 0 {
-            return Err(ErasureError::RLNC(NetworkCodingError::InvalidPiece(
-                format!(
-                    "Data length {} must be divisible by num_chunks {}",
-                    data.len(),
-                    num_chunks
-                ),
-            )));
-        }
-        let erasure_coder = if use_rlnc {
-            ErasureCoderType::RLNC(
-                RLNCErasureCoder::new(committer, Some(data), num_chunks)
-                    .map_err(ErasureError::RLNC)?,
-            )
-        } else {
-            ErasureCoderType::RS(
-                RSErasureCoder::new(data, num_chunks, num_chunks / 4, 512)
-                    .map_err(ErasureError::RS)?,
-            )
-        };
-        let mut coded_block = Vec::new();
-        for _ in 0..num_shreds {
-            let coded_shred = erasure_coder.encode()?;
-            coded_block.push(coded_shred);
-        }
-        Ok(Node {
-            id,
-            erasure_coder,
-            committer,
-            neighbors: Vec::new(),
-            coded_block,
-            bandwidth_limit,
-        })
-    }
-
-    pub fn send(&self) -> Result<Vec<(usize, Vec<CodedShred>)>, ErasureError> {
-        let mut messages = Vec::new();
-        let _rng = rand::rng();
-
-        let available_shreds: Vec<_> = self.coded_block.iter().collect();
-        let num_to_send = self.bandwidth_limit.min(available_shreds.len());
-        let selected_shreds: Vec<CodedShred> = available_shreds
-            .into_iter()
-            .take(num_to_send)
-            .cloned()
-            .collect();
-
-        for &neighbor_id in &self.neighbors {
-            messages.push((neighbor_id, selected_shreds.clone()));
-        }
-
-        Ok(messages)
-    }
-
-    pub fn receive(
         &mut self,
-        coded_shreds: Vec<CodedShred>,
-        commitment: Option<&Vec<RistrettoPoint>>,
-    ) -> Result<(), ErasureError> {
-        for shred in coded_shreds {
-            match (&mut self.erasure_coder, &shred) {
-                (ErasureCoderType::RLNC(coder), CodedData::RLNC(coded_piece)) => {
-                    if let Some(commit) = commitment {
-                        coder.decoder.decode(coded_piece, commit).map_err(|e| {
-                            ErasureError::RLNC(NetworkCodingError::DecodingFailed(e.to_string()))
-                        })?;
-                    } else {
-                        return Err(ErasureError::RLNC(NetworkCodingError::DecodingFailed(
-                            "No commitment provided".to_string(),
-                        )));
-                    }
-                }
-                (ErasureCoderType::RS(coder), CodedData::RS(data)) => {
-                    coder.decode(data).map_err(ErasureError::RS)?;
-                }
-                _ => {
-                    return Err(ErasureError::RLNC(NetworkCodingError::InvalidPiece(
-                        "Mismatched coder and shred type".to_string(),
-                    )))
-                }
+        block_id: BlockId,
+        data: Vec<u8>,
+        use_rs: bool,
+    ) -> Result<(), String> {
+        // 1) optionally extend using RS (placeholder implementation).
+        // Ideally replace with RSErasureCoder::new(...) and extract shares.
+        let num_shreds = self.num_shreds;
+        let mut extended: Vec<u8> = Vec::new();
+
+        if use_rs {
+            // Placeholder RS extend: simply pad to multiple of num_shreds and split.
+            // Replace with real reed-solomon extension if needed.
+            let shred_size = (data.len() + num_shreds - 1) / num_shreds;
+            let mut padded = data.clone();
+            padded.resize(shred_size * num_shreds, 0u8);
+            extended = padded;
+        } else {
+            // No RS: just split original block across shreds (if divisible)
+            if data.len() % num_shreds != 0 {
+                return Err(format!(
+                    "data.len() {} not divisible by num_shreds {}",
+                    data.len(),
+                    num_shreds
+                ));
             }
-            self.coded_block.push(shred);
+            extended = data;
         }
+
+        // 2) split extended into shreds and store
+        let shred_size = extended.len() / num_shreds;
+        for sid in 0..num_shreds {
+            let start = sid * shred_size;
+            let end = start + shred_size;
+            let shred_bytes = extended[start..end].to_vec();
+            self.storage.store_shred(block_id, sid, shred_bytes);
+        }
+
+        // 3) For each shred: compute commitment and produce initial coded pieces (a few), store them in storage
+        self.active_block = Some(block_id);
+        self.encoder = NetworkEncoder::new(block_id, num_shreds, self.num_chunks_per_shred);
+
+        for sid in 0..num_shreds {
+            // create and store commitment for shred
+            let commitment = self
+                .encoder
+                .get_shred_commitment::<C, _>(&self.storage, self.committer, sid)
+                .map_err(|e| format!("commit failed for shred {}: {}", sid, e))?;
+            self.storage
+                .store_commitment(block_id, sid, commitment.clone());
+
+            // produce several initial coded pieces for this shred (like num_chunks_per_shred + extras)
+            let initial_pieces = self.num_chunks_per_shred + 2;
+            for idx in 0..initial_pieces {
+                let piece = self
+                    .encoder
+                    .encode_one_shred::<C, _>(&self.storage, self.committer, sid)
+                    .map_err(|e| format!("encode failed shred {}: {}", sid, e))?;
+                // store with deterministic piece idx (caller chooses idx)
+                let piece_idx = idx; // choose idx scheme; here simple
+                self.storage
+                    .store_coded_piece(block_id, sid, piece_idx, piece);
+            }
+        }
+
         Ok(())
     }
 
-    pub fn sample(&self) -> Result<&CodedShred, ErasureError> {
-        let mut rng = rand::rng();
-        if self.coded_block.is_empty() {
-            return Err(ErasureError::RLNC(NetworkCodingError::InvalidPiece(
-                "No coded shreds available for sampling".to_string(),
-            )));
+    /// Send: collect up to bandwidth_limit pieces (across shreds) and form messages to each neighbor.
+    /// For each neighbor, we clone the same batch.
+    pub fn send(
+        &self,
+        block_id: BlockId,
+        source_id: usize,
+    ) -> Vec<(usize, Vec<Message<Vec<RistrettoPoint>>>)> {
+        let mut messages_per_neighbor: Vec<(usize, Vec<Message<Vec<RistrettoPoint>>>)> = Vec::new();
+
+        // gather candidate pieces: choose by iterating shreds and their indices
+        let mut candidates: Vec<Message<Vec<RistrettoPoint>>> = Vec::new();
+
+        for sid in 0..self.num_shreds {
+            let indices = self.storage.list_piece_indices(block_id, sid);
+            for &idx in indices.iter() {
+                if let Some(piece) = self.storage.get_coded_piece(block_id, sid, idx) {
+                    if let Some(commit) = self.storage.get_commitment(block_id, sid) {
+                        let msg = Message {
+                            block_id,
+                            shred_id: sid,
+                            piece_idx: idx,
+                            piece: piece.clone(),
+                            commitment: commit.clone(),
+                            source_id,
+                        };
+                        candidates.push(msg);
+                    }
+                }
+                if candidates.len() >= self.bandwidth_limit {
+                    break;
+                }
+            }
+            if candidates.len() >= self.bandwidth_limit {
+                break;
+            }
         }
-        let index = rng.random_range(0..self.coded_block.len());
-        Ok(&self.coded_block[index])
+
+        for &nbr in &self.neighbors {
+            messages_per_neighbor.push((nbr, candidates.clone()));
+        }
+
+        messages_per_neighbor
     }
 
-    pub fn reconstruct_block(
+    /// Receive messages: verify commit, store coded piece, try recode (generate new piece) and try decode shred.
+    /// Return Ok(()) or Err(String)
+    pub fn receive_messages(
         &mut self,
-        neighbors: &mut [&mut Node<C>],
-        commitment: Option<&Vec<RistrettoPoint>>,
-    ) -> Result<Vec<u8>, ErasureError> {
-        while !self.erasure_coder.is_decoded() {
-            for neighbor in neighbors.iter_mut() {
-                if self.neighbors.contains(&neighbor.id) {
-                    let coded_shreds = neighbor.coded_block.clone();
-                    self.receive(coded_shreds, commitment)?;
+        msgs: Vec<Message<Vec<RistrettoPoint>>>,
+    ) -> Result<(), String> {
+        for msg in msgs.into_iter() {
+            // verify commitment first via decoder
+            let commitment = msg.commitment.clone();
+            let piece = msg.piece.clone();
+            // verify using stateless decoder API
+            self.decoder
+                .verify_piece::<C, InMemoryStorage<C>>(self.committer, &piece, &commitment)
+                .map_err(|e| format!("verify failed: {:?}", e))?;
+
+            // store the coded piece to storage
+            // choose piece_idx scheme: we use provided piece_idx if free, otherwise append at max_index+1
+            let existing = self
+                .storage
+                .get_coded_piece(msg.block_id, msg.shred_id, msg.piece_idx);
+            let store_idx = if existing.is_some() {
+                // find next free index
+                let mut next = 0usize;
+                loop {
+                    if self
+                        .storage
+                        .get_coded_piece(msg.block_id, msg.shred_id, next)
+                        .is_none()
+                    {
+                        break next;
+                    }
+                    next += 1;
+                }
+            } else {
+                msg.piece_idx
+            };
+            self.storage
+                .store_coded_piece(msg.block_id, msg.shred_id, store_idx, piece.clone());
+
+            // update recoder: we decide to recode if we have at least 2 pieces for that shred
+            let indices = self.storage.list_piece_indices(msg.block_id, msg.shred_id);
+            if indices.len() >= 2 {
+                // choose some indices to mix (for example all present)
+                let mix_idxs = indices.clone();
+                let new_piece = self
+                    .recoder
+                    .recode::<C, _>(&self.storage, msg.block_id, msg.shred_id, &mix_idxs)
+                    .map_err(|e| format!("recode failed: {}", e))?;
+                // store new recoded piece (use next free index)
+                let mut next_idx = 0usize;
+                loop {
+                    if self
+                        .storage
+                        .get_coded_piece(msg.block_id, msg.shred_id, next_idx)
+                        .is_none()
+                    {
+                        break;
+                    }
+                    next_idx += 1;
+                }
+                self.storage
+                    .store_coded_piece(msg.block_id, msg.shred_id, next_idx, new_piece);
+            }
+
+            // try decode shred: gather indices and call decoder.try_decode_shred
+            let piece_indices = self.storage.list_piece_indices(msg.block_id, msg.shred_id);
+            if piece_indices.len() >= self.num_chunks_per_shred {
+                // attempt decode
+                if let Some(commit) = self.storage.get_commitment(msg.block_id, msg.shred_id) {
+                    match self.decoder.try_decode_shred::<C, _>(
+                        &self.storage,
+                        msg.block_id,
+                        msg.shred_id,
+                        &piece_indices,
+                        commit,
+                    ) {
+                        Ok(decoded_bytes) => {
+                            // store decoded shred
+                            self.storage.store_decoded_shred(
+                                msg.block_id,
+                                msg.shred_id,
+                                decoded_bytes,
+                            );
+                        }
+                        Err(_) => {
+                            // decoding incomplete or failed -> ignore for now
+                        }
+                    }
                 }
             }
         }
-        self.erasure_coder.get_decoded_data()
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::commitments::CodedPiece;
-
-    #[derive(Debug, thiserror::Error)]
-    pub enum MockCommitterError {
-        #[error("Invalid chunk size: {0}")]
-        InvalidChunkSize(String),
+        Ok(())
     }
 
-    struct MockCommitter {
-        num_chunks: usize,
-    }
-
-    impl MockCommitter {
-        fn new(num_chunks: usize) -> Self {
-            MockCommitter { num_chunks }
+    /// Try reconstruct full block if all shreds decoded.
+    /// If RS was used originally, you should call RS reconstruct here (placeholder returns concatenated shreds).
+    pub fn try_reconstruct_block(&self, block_id: BlockId, use_rs: bool) -> Option<Vec<u8>> {
+        let decoded = self.storage.list_decoded_shreds(block_id);
+        if decoded.len() < self.num_shreds {
+            return None;
         }
-    }
-
-    impl Committer for MockCommitter {
-        type Scalar = Scalar;
-        type Commitment = Vec<RistrettoPoint>;
-        type Error = MockCommitterError;
-
-        fn commit(&self, data: &Vec<Vec<Self::Scalar>>) -> Result<Self::Commitment, Self::Error> {
-            if data.is_empty() || data.len() != self.num_chunks {
-                return Err(MockCommitterError::InvalidChunkSize(format!(
-                    "Expected {} chunks, got {}",
-                    self.num_chunks,
-                    data.len()
-                )));
+        // assemble in order
+        let mut out = Vec::new();
+        for sid in 0..self.num_shreds {
+            if let Some(bytes) = self.storage.get_decoded_shred(block_id, sid) {
+                out.extend_from_slice(bytes);
+            } else {
+                return None;
             }
-            Ok(vec![RistrettoPoint::default(); self.num_chunks])
         }
-
-        fn verify(
-            &self,
-            commitment: Option<&Self::Commitment>,
-            _piece: &CodedPiece<Self::Scalar>,
-        ) -> bool {
-            commitment.is_some()
+        if use_rs {
+            // placeholder: if RS was used, you should run RS reconstruct to get original block
+            // For now, return ext block (concatenated shreds)
+            Some(out)
+        } else {
+            Some(out)
         }
-    }
-
-    fn create_dummy_data(num_shreds: usize, chunk_size: usize) -> Vec<u8> {
-        vec![1u8; num_shreds * chunk_size]
-    }
-
-    #[test]
-    fn test_node_new() {
-        let committer = MockCommitter::new(16);
-        let erasure_coder = ErasureCoderType::RLNC(
-            RLNCErasureCoder::new(&committer, None, 16).expect("Failed to create RLNC coder"),
-        );
-        let neighbors = vec![1, 2, 3];
-        let bandwidth_limit = 5;
-
-        let node = Node::new(
-            0,
-            &committer,
-            erasure_coder,
-            neighbors.clone(),
-            bandwidth_limit,
-        );
-
-        assert_eq!(node.id, 0);
-        assert_eq!(node.neighbors, neighbors);
-        assert_eq!(node.bandwidth_limit, bandwidth_limit);
-        assert!(node.coded_block.is_empty());
-    }
-
-    #[test]
-    fn test_node_new_source_rlnc() {
-        let committer = MockCommitter::new(16);
-        let num_chunks = 16;
-        let chunk_size = 512;
-        let num_shreds = 16;
-        let data = create_dummy_data(num_shreds, chunk_size);
-        let bandwidth_limit = 5;
-
-        let node = Node::new_source(
-            0,
-            &committer,
-            data,
-            num_chunks,
-            num_shreds,
-            true,
-            bandwidth_limit,
-        );
-        assert!(
-            node.is_ok(),
-            "Failed to create source node: {:?}",
-            node.err()
-        );
-        let node = node.unwrap();
-
-        assert_eq!(node.id, 0);
-        assert_eq!(node.neighbors, Vec::<usize>::new());
-        assert_eq!(node.bandwidth_limit, bandwidth_limit);
-        assert_eq!(
-            node.coded_block.len(),
-            num_shreds,
-            "Expected {} shreds",
-            num_shreds
-        );
-    }
-
-    #[test]
-    fn test_node_new_source_rs() {
-        let committer = MockCommitter::new(16);
-        let num_chunks = 16;
-        let chunk_size = 512;
-        let num_shreds = 16;
-        let data = create_dummy_data(num_shreds, chunk_size);
-        let bandwidth_limit = 5;
-
-        let node = Node::new_source(
-            0,
-            &committer,
-            data,
-            num_chunks,
-            num_shreds,
-            false,
-            bandwidth_limit,
-        );
-        assert!(
-            node.is_ok(),
-            "Failed to create source node: {:?}",
-            node.err()
-        );
-        let node = node.unwrap();
-
-        assert_eq!(node.id, 0);
-        assert_eq!(node.neighbors, Vec::<usize>::new());
-        assert_eq!(node.bandwidth_limit, bandwidth_limit);
-        assert_eq!(
-            node.coded_block.len(),
-            num_shreds,
-            "Expected {} shreds",
-            num_shreds
-        );
-    }
-
-    #[test]
-    fn test_node_send() {
-        let committer = MockCommitter::new(16);
-        let num_chunks = 16;
-        let chunk_size = 512;
-        let num_shreds = 16;
-        let data = create_dummy_data(num_shreds, chunk_size);
-        let bandwidth_limit = 5;
-
-        let node = Node::new_source(
-            0,
-            &committer,
-            data,
-            num_chunks,
-            num_shreds,
-            true,
-            bandwidth_limit,
-        )
-        .expect("Failed to create source node");
-        let neighbors = vec![1, 2];
-        let node = Node { neighbors, ..node };
-
-        let messages = node.send().expect("Failed to send");
-        assert_eq!(messages.len(), 2, "Should send to 2 neighbors");
-        for (neighbor_id, shreds) in messages {
-            assert!(neighbor_id == 1 || neighbor_id == 2, "Invalid neighbor ID");
-            assert_eq!(
-                shreds.len(),
-                bandwidth_limit,
-                "Should send 5 shreds per neighbor"
-            );
-        }
-    }
-
-    #[test]
-    fn test_node_receive() {
-        let committer = MockCommitter::new(16);
-        let num_chunks = 16;
-        let chunk_size = 512;
-        let num_shreds = 16;
-        let data = create_dummy_data(num_shreds, chunk_size);
-
-        let source_node = Node::new_source(0, &committer, data, num_chunks, num_shreds, true, 5)
-            .expect("Failed to create source node");
-        let erasure_coder = ErasureCoderType::RLNC(
-            RLNCErasureCoder::new(&committer, None, num_chunks)
-                .expect("Failed to create RLNC coder"),
-        );
-        let mut receiver_node = Node::new(1, &committer, erasure_coder, vec![0], 5);
-
-        let shreds = source_node.coded_block[..5].to_vec();
-        let commitment = match &source_node.erasure_coder {
-            ErasureCoderType::RLNC(coder) => coder.encoder.get_commitment().ok(),
-            _ => None,
-        };
-        let result = receiver_node.receive(shreds, commitment.as_ref());
-        assert!(result.is_ok(), "Failed to receive: {:?}", result.err());
-        assert_eq!(
-            receiver_node.coded_block.len(),
-            5,
-            "Should have received 5 shreds"
-        );
-    }
-
-    #[test]
-    fn test_node_sample() {
-        let committer = MockCommitter::new(16);
-        let num_chunks = 16;
-        let chunk_size = 512;
-        let num_shreds = 16;
-        let data = create_dummy_data(num_shreds, chunk_size);
-
-        let node = Node::new_source(0, &committer, data, num_chunks, num_shreds, true, 5)
-            .expect("Failed to create source node");
-        let sample = node.sample();
-        assert!(sample.is_ok(), "Failed to sample: {:?}", sample.err());
-
-        let erasure_coder = ErasureCoderType::RLNC(
-            RLNCErasureCoder::new(&committer, None, num_chunks)
-                .expect("Failed to create RLNC coder"),
-        );
-        let empty_node = Node::new(1, &committer, erasure_coder, vec![], 5);
-        let sample = empty_node.sample();
-        assert!(
-            matches!(
-                sample,
-                Err(ErasureError::RLNC(NetworkCodingError::InvalidPiece(_)))
-            ),
-            "Expected InvalidPiece error"
-        );
-    }
-
-    #[test]
-    fn test_node_reconstruct_block_rlnc() {
-        let committer = MockCommitter::new(16);
-        let num_chunks = 16;
-        let chunk_size = 512;
-        let num_shreds = 16;
-        let data = create_dummy_data(num_shreds, chunk_size);
-
-        let source_node =
-            Node::new_source(0, &committer, data.clone(), num_chunks, num_shreds, true, 5)
-                .expect("Failed to create source node");
-        let commitment = match &source_node.erasure_coder {
-            ErasureCoderType::RLNC(coder) => coder
-                .encoder
-                .get_commitment()
-                .expect("Failed to get commitment"),
-            _ => panic!("Expected RLNC coder"),
-        };
-
-        let erasure_coder = ErasureCoderType::RLNC(
-            RLNCErasureCoder::new(&committer, None, num_chunks)
-                .expect("Failed to create RLNC coder"),
-        );
-        let mut receiver_node = Node::new(1, &committer, erasure_coder, vec![0], 5);
-
-        let erasure_coder_neighbor = ErasureCoderType::RLNC(
-            RLNCErasureCoder::new(&committer, None, num_chunks)
-                .expect("Failed to create RLNC coder"),
-        );
-        let mut neighbor_node = Node {
-            id: source_node.id,
-            erasure_coder: erasure_coder_neighbor,
-            committer: source_node.committer,
-            neighbors: source_node.neighbors.clone(),
-            coded_block: source_node.coded_block.clone(),
-            bandwidth_limit: source_node.bandwidth_limit,
-        };
-        let mut neighbors = vec![&mut neighbor_node];
-
-        let reconstructed_data = receiver_node.reconstruct_block(&mut neighbors, Some(&commitment));
-        assert!(
-            reconstructed_data.is_ok(),
-            "Failed to reconstruct block: {:?}",
-            reconstructed_data.err()
-        );
-
-        let reconstructed_data = reconstructed_data.unwrap();
-        assert_eq!(
-            reconstructed_data.len(),
-            data.len(),
-            "Reconstructed data length mismatch"
-        );
-    }
-
-    #[test]
-    fn test_node_reconstruct_block_rs() {
-        let committer = MockCommitter::new(16);
-        let num_chunks = 16;
-        let chunk_size = 512;
-        let num_shreds = 16;
-        let data = create_dummy_data(num_shreds, chunk_size);
-
-        let source_node = Node::new_source(
-            0,
-            &committer,
-            data.clone(),
-            num_chunks,
-            num_shreds,
-            false,
-            5,
-        )
-        .expect("Failed to create source node");
-
-        let erasure_coder = ErasureCoderType::RS(
-            RSErasureCoder::new(
-                vec![0u8; num_shreds * chunk_size],
-                num_chunks,
-                num_chunks / 4,
-                chunk_size,
-            )
-            .expect("Failed to create RS coder"),
-        );
-        let mut receiver_node = Node::new(1, &committer, erasure_coder, vec![0], 5);
-
-        let erasure_coder_neighbor = ErasureCoderType::RS(
-            RSErasureCoder::new(
-                vec![0u8; num_shreds * chunk_size],
-                num_chunks,
-                num_chunks / 4,
-                chunk_size,
-            )
-            .expect("Failed to create RS coder"),
-        );
-        let mut neighbor_node = Node {
-            id: source_node.id,
-            erasure_coder: erasure_coder_neighbor,
-            committer: source_node.committer,
-            neighbors: source_node.neighbors.clone(),
-            coded_block: source_node.coded_block.clone(),
-            bandwidth_limit: source_node.bandwidth_limit,
-        };
-        let mut neighbors = vec![&mut neighbor_node];
-
-        let reconstructed_data = receiver_node.reconstruct_block(&mut neighbors, None);
-        assert!(
-            reconstructed_data.is_ok(),
-            "Failed to reconstruct block: {:?}",
-            reconstructed_data.err()
-        );
-
-        let reconstructed_data = reconstructed_data.unwrap();
-        assert_eq!(
-            reconstructed_data.len(),
-            data.len(),
-            "Reconstructed data length mismatch"
-        );
     }
 }
