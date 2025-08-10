@@ -382,9 +382,10 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::blocks::create_random_block;
+
     use super::*;
     use curve25519_dalek::{ristretto::RistrettoPoint, scalar::Scalar};
-    use rand::Rng;
     use thiserror::Error;
 
     // Mock Committer để mô phỏng
@@ -423,14 +424,6 @@ mod tests {
         ) -> bool {
             true
         }
-    }
-
-    // Hàm helper tạo dữ liệu ngẫu nhiên
-    fn create_random_block(size: usize) -> Vec<u8> {
-        let mut rng = rand::rng();
-        let mut data = vec![0u8; size];
-        rng.fill(&mut data[..]);
-        data
     }
 
     #[test]
@@ -501,93 +494,81 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn test_new_source_with_rs_too_large() {
-    //     const BLOCK_SIZE: usize = 2 * 1024 * 1024;
-    //     let committer = MockCommitter;
-    //     let mut node = Node::new(1, &committer, vec![2], 10, 4, 16);
-    //     let block_id = 1;
-    //     let data = create_random_block(BLOCK_SIZE + 1); // Vượt quá 2MB
-    //     let result = node.new_source(block_id, data, true, 512);
-    //     assert!(result.is_err());
-    //     assert!(result.unwrap_err().contains("exceeds maximum block size"));
-    // }
+    #[test]
+    fn test_send_receive_reconstruct_no_rs() {
+        let committer = MockCommitter;
+        let block_id = 1;
+        let num_shreds = 2;
+        let num_chunks = 4;
+        let data = create_random_block(512);
+        println!("Block data len: {}", data.len());
 
-    // #[test]
-    // fn test_send_receive_reconstruct_no_rs() {
-    //     let committer = MockCommitter;
-    //     let block_id = 1;
-    //     let num_shreds = 2;
-    //     let num_chunks = 4;
-    //     let data = create_random_block(512);
-    //     println!("Block data len: {}", data.len());
+        let mut source = Node::new(1, &committer, vec![2], num_shreds * (num_chunks + 2), num_shreds, num_chunks);
+        assert!(source.new_source(block_id, data.clone(), false, 512).is_ok());
 
-    //     let mut source = Node::new(1, &committer, vec![2], num_shreds * (num_chunks + 2), num_shreds, num_chunks);
-    //     assert!(source.new_source(block_id, data.clone(), false).is_ok());
+        let mut receiver = Node::new(2, &committer, vec![1], num_shreds * (num_chunks + 2), num_shreds, num_chunks);
 
-    //     let mut receiver = Node::new(2, &committer, vec![1], num_shreds * (num_chunks + 2), num_shreds, num_chunks);
+        // Send and receive unique messages multiple times to ensure 4+ independent pieces
+        for i in 0..num_shreds {
+            let messages = source.send(block_id, 1);
+            assert_eq!(messages.len(), 1);
+            let (_, sent_msgs) = messages[0].clone();
+            assert!(!sent_msgs.is_empty(), "No messages sent at iteration {}", i);
+            println!("Iteration {}: Sent {} messages", i, sent_msgs.len());
+            for msg in &sent_msgs {
+                println!("Message: block_id={}, shred_id={}, piece_idx={}", msg.block_id, msg.shred_id, msg.piece_idx);
+            }
 
-    //     // Send and receive unique messages multiple times to ensure 4+ independent pieces
-    //     for i in 0..num_shreds {
-    //         let messages = source.send(block_id, 1);
-    //         assert_eq!(messages.len(), 1);
-    //         let (_, sent_msgs) = messages[0].clone();
-    //         assert!(!sent_msgs.is_empty(), "No messages sent at iteration {}", i);
-    //         println!("Iteration {}: Sent {} messages", i, sent_msgs.len());
-    //         for msg in &sent_msgs {
-    //             println!("Message: block_id={}, shred_id={}, piece_idx={}", msg.block_id, msg.shred_id, msg.piece_idx);
-    //         }
+            let result = receiver.receive_messages(sent_msgs);
+            if let Err(e) = result {
+                panic!("receive_messages FAILED at iteration {}: {}", i, e);
+            }
 
-    //         let result = receiver.receive_messages(sent_msgs);
-    //         if let Err(e) = result {
-    //             panic!("receive_messages FAILED at iteration {}: {}", i, e);
-    //         }
+            // Generate new independent pieces by recoding for each shred
+            for sid in 0..num_shreds {
+                let indices = source.storage.list_piece_indices(block_id, sid);
+                if indices.len() >= 2 {
+                    let new_piece = source.recoder.recode(&source.storage, block_id, sid, &indices)
+                        .expect("Recode failed");
+                    let mut next_idx = indices.iter().max().unwrap_or(&0) + 1;
+                    while source.storage.get_coded_piece(block_id, sid, next_idx).is_some() {
+                        next_idx += 1;
+                    }
+                    source.storage.store_coded_piece(block_id, sid, next_idx, new_piece);
+                }
+            }
+        }
 
-    //         // Generate new independent pieces by recoding for each shred
-    //         for sid in 0..num_shreds {
-    //             let indices = source.storage.list_piece_indices(block_id, sid);
-    //             if indices.len() >= 2 {
-    //                 let new_piece = source.recoder.recode(&source.storage, block_id, sid, &indices)
-    //                     .expect("Recode failed");
-    //                 let mut next_idx = indices.iter().max().unwrap_or(&0) + 1;
-    //                 while source.storage.get_coded_piece(block_id, sid, next_idx).is_some() {
-    //                     next_idx += 1;
-    //                 }
-    //                 source.storage.store_coded_piece(block_id, sid, next_idx, new_piece);
-    //             }
-    //         }
-    //     }
+        // Debug: Check number of pieces and decoded shreds
+        for sid in 0..num_shreds {
+            let indices = receiver.storage.list_piece_indices(block_id, sid);
+            println!("Shred {} has {} pieces", sid, indices.len());
+            assert!(indices.len() >= num_chunks, "Not enough pieces for shred {}: {}", sid, indices.len());
+            if receiver.storage.get_decoded_shred(block_id, sid).is_some() {
+                println!("Shred {} decoded successfully", sid);
+            } else {
+                println!("Shred {} not decoded", sid);
+            }
+        }
 
-    //     // Debug: Check number of pieces and decoded shreds
-    //     for sid in 0..num_shreds {
-    //         let indices = receiver.storage.list_piece_indices(block_id, sid);
-    //         println!("Shred {} has {} pieces", sid, indices.len());
-    //         assert!(indices.len() >= num_chunks, "Not enough pieces for shred {}: {}", sid, indices.len());
-    //         if receiver.storage.get_decoded_shred(block_id, sid).is_some() {
-    //             println!("Shred {} decoded successfully", sid);
-    //         } else {
-    //             println!("Shred {} not decoded", sid);
-    //         }
-    //     }
-
-    //     let reconstructed = receiver.try_reconstruct_block(block_id, false);
-    //     if reconstructed.is_none() {
-    //         println!("Reconstruction failed: no block returned");
-    //     } else {
-    //         let reconstructed_data = reconstructed.clone().unwrap();
-    //         println!("Reconstructed block len: {}", reconstructed_data.len());
-    //         // Print differences if assertion fails
-    //         if reconstructed_data != data {
-    //             for i in 0..data.len() {
-    //                 if reconstructed_data[i] != data[i] {
-    //                     println!("Difference at index {}: reconstructed = {}, original = {}", i, reconstructed_data[i], data[i]);
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     assert!(reconstructed.is_some(), "Reconstruction failed");
-    //     assert_eq!(reconstructed.unwrap(), data, "Reconstructed block does not match original");
-    // }
+        let reconstructed = receiver.try_reconstruct_block(block_id, false);
+        if reconstructed.is_none() {
+            println!("Reconstruction failed: no block returned");
+        } else {
+            let reconstructed_data = reconstructed.clone().unwrap();
+            println!("Reconstructed block len: {}", reconstructed_data.len());
+            // Print differences if assertion fails
+            if reconstructed_data != data {
+                for i in 0..data.len() {
+                    if reconstructed_data[i] != data[i] {
+                        println!("Difference at index {}: reconstructed = {}, original = {}", i, reconstructed_data[i], data[i]);
+                    }
+                }
+            }
+        }
+        assert!(reconstructed.is_some(), "Reconstruction failed");
+        assert_eq!(reconstructed.unwrap(), data, "Reconstructed block does not match original");
+    }
 
     // #[test]
     // fn test_send_receive_reconstruct_with_rs() {
