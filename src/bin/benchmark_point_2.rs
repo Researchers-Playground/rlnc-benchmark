@@ -1,16 +1,12 @@
-use rlnc_benchmark::rlnc::storage::NodeStorage;
-
 use rlnc_benchmark::commitments::ristretto::pedersen::PedersenCommitter;
 use rlnc_benchmark::networks::node::Node;
+use rlnc_benchmark::rlnc::storage::{BlockId, NodeStorage};
 use rlnc_benchmark::utils::blocks::create_random_block;
 use rlnc_benchmark::utils::bytes::bytes_to_human_readable;
 use rlnc_benchmark::utils::eds::{extended_data_share, FlatMatrix};
-
 use std::collections::HashMap;
 use std::time::Instant;
 use sysinfo::System;
-
-use rlnc_benchmark::rlnc::storage::BlockId;
 
 struct NetworkConfig {
     num_nodes: usize,
@@ -48,13 +44,26 @@ struct BenchmarkResult {
     cpu_usage: f32,
 }
 
-/// Simulate network using the new Node API (Node::new_source, Node::new, Node::send, Node::receive_messages)
-fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> BenchmarkResult {
-    const BLOCK_SIZE: usize = 128 * 1024; // 128KB
-    const SHARE_SIZE: usize = 512;
-    // k used to compute number of shreds in original script (keeps same semantics)
-    let k = (BLOCK_SIZE / SHARE_SIZE).isqrt(); // k=16
-    let block = create_random_block(BLOCK_SIZE);
+/// Simulate network using the new Node API
+fn simulate_network(
+    config: &NetworkConfig,
+    committer: &PedersenCommitter,
+    block_size: usize,
+    share_size: usize,
+) -> BenchmarkResult {
+    // Validate constraints
+    assert_eq!(
+        block_size % share_size,
+        0,
+        "block_size must be divisible by share_size"
+    );
+    let k = ((block_size / share_size) as u64).isqrt() as usize; // Cast to u64 for isqrt
+    assert!(
+        k > 0,
+        "Invalid k: block_size too small or share_size too large"
+    );
+
+    let block = create_random_block(block_size);
 
     println!(
         "Step 1: Block created - size: {} bytes, k: {}",
@@ -62,12 +71,12 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
         k
     );
 
-    // Create 2D erasure-coded matrix (unchanged from original)
+    // Create 2D erasure-coded matrix
     println!(
         "Step 2: Creating FlatMatrix with k={} ({}x{} matrix)",
         k, k, k
     );
-    let original_matrix = FlatMatrix::new(&block, SHARE_SIZE, k);
+    let original_matrix = FlatMatrix::new(&block, share_size, k);
     let extended_matrix = extended_data_share(&original_matrix, k);
     println!(
         "Step 2: Extended matrix dimensions: {:?}, data size: {}",
@@ -75,14 +84,13 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
         bytes_to_human_readable(extended_matrix.data().len())
     );
 
-    // We'll use block_id = 0 for this run
+    // Use block_id = 0 for this run
     let block_id: BlockId = 0;
 
-    // Build nodes map using the new Node API
+    // Build nodes map
     let mut nodes: HashMap<usize, Node<PedersenCommitter>> = HashMap::new();
 
-    // 1) Create source node: new_source will split extended_data into shreds and produce per-shred RLNC-coded pieces + commitments in storage
-    // Node::new signature (id, committer, neighbors, bandwidth_limit, num_shreds, num_chunks_per_shred)
+    // 1) Create source node
     let mut source_node = Node::new(
         0,
         committer,
@@ -93,7 +101,7 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
     );
 
     source_node
-        .new_source(block_id, extended_matrix.data().to_vec(), true)
+        .new_source(block_id, extended_matrix.data().to_vec(), true, share_size)
         .expect("Step 3: Failed to create source node (new_source)");
 
     nodes.insert(0, source_node);
@@ -131,8 +139,7 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
     let mut cpu_usages: Vec<f32> = Vec::new();
     let mut system = System::new_all();
 
-    // 4) For logging: fetch one example commitment length (per-shred commitment)
-    // We'll fetch commitment from source storage for shred 0 (source has already stored commitments in new_source)
+    // 4) Fetch example commitment length
     let example_commitment_len = nodes
         .get(&0)
         .and_then(|n| n.storage.get_commitment(block_id, 0))
@@ -145,7 +152,7 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
 
     // 5) Main rounds: run until all nodes have reconstructed the block
     loop {
-        // Check termination: all nodes reconstructed the block (try_reconstruct_block returns Some)
+        // Check termination
         let all_decoded = nodes
             .values()
             .all(|n| n.try_reconstruct_block(block_id, true).is_some());
@@ -161,16 +168,13 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
         cpu_usages.push(cpu_usage);
 
         for _ in 0..config.aggressive {
-            // collect messages to deliver in this micro-iteration
+            // Collect messages
             let mut neighbor_msgs: Vec<(usize, Vec<_>, usize)> = Vec::new();
             for id in 0..config.num_nodes {
                 if let Some(node) = nodes.get(&id) {
-                    // Node::send returns Vec<(neighbor_id, Vec<Message<Commitment>>)>
                     let outbound = node.send(block_id, id);
                     for (neighbor_id, msgs) in outbound {
-                        // measure bandwidth for each message piece
                         for msg in &msgs {
-                            // sized in bytes: data scalars * 32 + coeffs * 32
                             let piece = &msg.piece;
                             let bytes = piece.data.len() * 32 + piece.coefficients.len() * 32;
                             bandwidth_bytes += bytes;
@@ -180,7 +184,7 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
                 }
             }
 
-            // deliver collected messages
+            // Deliver messages
             for (neighbor_id, msgs, source_id) in neighbor_msgs.drain(..) {
                 if let Some(neighbor) = nodes.get_mut(&neighbor_id) {
                     neighbor.receive_messages(msgs).unwrap_or_else(|e| {
@@ -210,7 +214,7 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
             }
         }
 
-        // safety: prevent infinite loop in pathological cases
+        // Prevent infinite loop
         if round_count > 10000 {
             println!("Terminating after excessive rounds");
             break;
@@ -233,37 +237,78 @@ fn simulate_network(config: &NetworkConfig, committer: &PedersenCommitter) -> Be
 }
 
 fn main() {
-    // Giảm mạnh để chạy nhanh hơn
-    const BLOCK_SIZE: usize = 4 * 1024; // 4KB thay vì 128KB
-    const SHARE_SIZE: usize = 512; // Giữ nguyên như reference
-    let k: usize = (BLOCK_SIZE / SHARE_SIZE).isqrt(); // k=2
-    let num_chunks = 2; // giảm từ 8 xuống 2
-    let num_shreds = k; // 2
-    let chunk_size_in_scalars = SHARE_SIZE / 32; // 512 / 32 = 16 scalars
-    let committer = PedersenCommitter::new(chunk_size_in_scalars);
+    // Test multiple configurations
+    let block_sizes = vec![4 * 1024, 16 * 1024]; // 4 KB, 16 KB
+    let share_sizes = vec![32, 64]; // 32 bytes, 64 bytes
+    let num_chunks = 2;
+    let num_nodes = 2;
+    let degree = 1;
+    let aggressive = 1;
+    let bandwidth_limit = 1;
 
-    // Chỉ 1 config nhỏ để chạy nhanh
-    let configs = vec![NetworkConfig::new(2, 1, 1, num_chunks, num_shreds, 1)];
+    for &block_size in &block_sizes {
+        for &share_size in &share_sizes {
+            // Skip invalid configurations
+            if block_size % share_size != 0 {
+                println!(
+                    "Skipping block_size={} share_size={} (not divisible)",
+                    block_size, share_size
+                );
+                continue;
+            }
+            let k = ((block_size / share_size) as u64).isqrt() as usize; // Cast to u64 for isqrt
+            if k == 0 {
+                println!(
+                    "Skipping block_size={} share_size={} (k=0)",
+                    block_size, share_size
+                );
+                continue;
+            }
+            let num_shreds = k;
+            let chunk_size_in_scalars = share_size / 32;
+            if chunk_size_in_scalars == 0 {
+                println!(
+                    "Skipping block_size={} share_size={} (chunk_size_in_scalars=0)",
+                    block_size, share_size
+                );
+                continue;
+            }
 
-    for config in configs {
-        let result = simulate_network(&config, &committer);
-        println!(
-            "Config: nodes={}, degree={}, aggressive={}, num_chunks={}, num_shreds={}, bandwidth_limit={}",
-            config.num_nodes,
-            config.degree,
-            config.aggressive,
-            config.num_chunks,
-            config.num_shreds,
-            config.bandwidth_limit
-        );
-        println!(
-            "Time: {:.2} ms, Bandwidth: {} ({} bytes), Round trips: {}, Avg CPU Usage: {:.2}%",
-            result.time_ms,
-            bytes_to_human_readable(result.bandwidth_bytes),
-            result.bandwidth_bytes,
-            result.round_trips,
-            result.cpu_usage
-        );
+            let committer = PedersenCommitter::new(chunk_size_in_scalars);
+            let config = NetworkConfig::new(
+                num_nodes,
+                degree,
+                aggressive,
+                num_chunks,
+                num_shreds,
+                bandwidth_limit,
+            );
+
+            println!(
+                "\nRunning benchmark with block_size={} ({}), share_size={}, k={}",
+                block_size,
+                bytes_to_human_readable(block_size),
+                share_size,
+                k
+            );
+            let result = simulate_network(&config, &committer, block_size, share_size);
+            println!(
+                "Config: nodes={}, degree={}, aggressive={}, num_chunks={}, num_shreds={}, bandwidth_limit={}",
+                config.num_nodes,
+                config.degree,
+                config.aggressive,
+                config.num_chunks,
+                config.num_shreds,
+                config.bandwidth_limit
+            );
+            println!(
+                "Time: {:.2} ms, Bandwidth: {} ({} bytes), Round trips: {}, Avg CPU Usage: {:.2}%",
+                result.time_ms,
+                bytes_to_human_readable(result.bandwidth_bytes),
+                result.bandwidth_bytes,
+                result.round_trips,
+                result.cpu_usage
+            );
+        }
     }
 }
-
