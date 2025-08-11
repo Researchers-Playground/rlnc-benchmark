@@ -57,7 +57,7 @@ fn simulate_network(
         0,
         "block_size must be divisible by share_size"
     );
-    let k = ((block_size / share_size) as u64).isqrt() as usize; // Cast to u64 for isqrt
+    let k = ((block_size / share_size) as u64).isqrt() as usize; // 16
     assert!(
         k > 0,
         "Invalid k: block_size too small or share_size too large"
@@ -101,8 +101,21 @@ fn simulate_network(
     );
 
     source_node
-        .new_source(block_id, extended_matrix.data().to_vec(), true, share_size)
+        .new_source(block_id, block, true, share_size)
         .expect("Step 3: Failed to create source node (new_source)");
+
+    // all shreds
+    let mut all_raw_shreds = Vec::new();
+    for shred_id in 0..config.num_shreds {
+        if let Some(shred_data) = source_node.storage.get_shred(block_id, shred_id) {
+            all_raw_shreds.extend_from_slice(&shred_data);
+        } else {
+            println!("Warning: shred {} is missing", shred_id);
+        }
+    }
+
+    // combine to raw extended block
+    let raw_extend_block = all_raw_shreds; // Vec<u8> chứa toàn bộ dữ liệu extended
 
     nodes.insert(0, source_node);
 
@@ -138,17 +151,6 @@ fn simulate_network(
     let mut bandwidth_bytes: usize = 0;
     let mut cpu_usages: Vec<f32> = Vec::new();
     let mut system = System::new_all();
-
-    // 4) Fetch example commitment length
-    let example_commitment_len = nodes
-        .get(&0)
-        .and_then(|n| n.storage.get_commitment(block_id, 0))
-        .map(|c| c.len())
-        .unwrap_or(0);
-    println!(
-        "Step 5: Example commitment obtained for shred 0, length: {}",
-        example_commitment_len
-    );
 
     // 5) Main rounds: run until all nodes have reconstructed the block
     loop {
@@ -228,6 +230,16 @@ fn simulate_network(
         0.0
     };
 
+    // just to get the result
+    let a_neighbor = nodes.get(&1).unwrap();
+    let reconstructed_block = a_neighbor.try_reconstruct_block(block_id, true).unwrap();
+
+    if reconstructed_block == raw_extend_block {
+        println!("reconstructed_block == raw_extend_block CHECKED!")
+    } else {
+        println!("reconstruct failed, the data is different!")
+    }
+
     BenchmarkResult {
         time_ms: duration.as_secs_f64() * 1000.0,
         bandwidth_bytes,
@@ -237,78 +249,78 @@ fn simulate_network(
 }
 
 fn main() {
-    // Test multiple configurations
-    let block_sizes = vec![4 * 1024, 16 * 1024]; // 4 KB, 16 KB
-    let share_sizes = vec![32, 64]; // 32 bytes, 64 bytes
-    let num_chunks = 2;
+    let block_size = 16 * 1024;  // 16KB = 16384 bytes
+    let share_size = 64; // share size
+    let num_chunks = 16;
     let num_nodes = 2;
     let degree = 1;
     let aggressive = 1;
-    let bandwidth_limit = 1;
 
-    for &block_size in &block_sizes {
-        for &share_size in &share_sizes {
-            // Skip invalid configurations
-            if block_size % share_size != 0 {
-                println!(
-                    "Skipping block_size={} share_size={} (not divisible)",
-                    block_size, share_size
-                );
-                continue;
-            }
-            let k = ((block_size / share_size) as u64).isqrt() as usize; // Cast to u64 for isqrt
-            if k == 0 {
-                println!(
-                    "Skipping block_size={} share_size={} (k=0)",
-                    block_size, share_size
-                );
-                continue;
-            }
-            let num_shreds = k;
-            let chunk_size_in_scalars = share_size / 32;
-            if chunk_size_in_scalars == 0 {
-                println!(
-                    "Skipping block_size={} share_size={} (chunk_size_in_scalars=0)",
-                    block_size, share_size
-                );
-                continue;
-            }
-
-            let committer = PedersenCommitter::new(chunk_size_in_scalars);
-            let config = NetworkConfig::new(
-                num_nodes,
-                degree,
-                aggressive,
-                num_chunks,
-                num_shreds,
-                bandwidth_limit,
-            );
-
-            println!(
-                "\nRunning benchmark with block_size={} ({}), share_size={}, k={}",
-                block_size,
-                bytes_to_human_readable(block_size),
-                share_size,
-                k
-            );
-            let result = simulate_network(&config, &committer, block_size, share_size);
-            println!(
-                "Config: nodes={}, degree={}, aggressive={}, num_chunks={}, num_shreds={}, bandwidth_limit={}",
-                config.num_nodes,
-                config.degree,
-                config.aggressive,
-                config.num_chunks,
-                config.num_shreds,
-                config.bandwidth_limit
-            );
-            println!(
-                "Time: {:.2} ms, Bandwidth: {} ({} bytes), Round trips: {}, Avg CPU Usage: {:.2}%",
-                result.time_ms,
-                bytes_to_human_readable(result.bandwidth_bytes),
-                result.bandwidth_bytes,
-                result.round_trips,
-                result.cpu_usage
-            );
-        }
+    if block_size % share_size != 0 {
+        panic!(
+            "Invalid config: block_size={} share_size={} (not divisible)",
+            block_size, share_size
+        );
     }
+
+    let k = ((block_size / share_size) as u64).isqrt() as usize; // 16 
+    if k == 0 {
+        panic!(
+            "Invalid config: block_size={} share_size={} (k=0)",
+            block_size, share_size
+        );
+    }
+    
+    let num_shreds = k; // 16
+    let extended_matrix_data_len = 4 * k * k * share_size;
+    let shreds_size = (extended_matrix_data_len as f64 / num_shreds as f64).ceil() as usize; // 64
+    let chunk_size_in_scalars = shreds_size / num_chunks;
+    if chunk_size_in_scalars == 0 {
+        panic!(
+            "Invalid config: block_size={} share_size={} (chunk_size_in_scalars=0)",
+            block_size, share_size
+        );
+    }
+
+    // Tạo PedersenCommitter
+    let committer = PedersenCommitter::new(chunk_size_in_scalars);
+    let bandwidth_limit = num_shreds * num_chunks; // to let benchmark run slow, decrease bw
+    let config = NetworkConfig::new(
+        num_nodes,
+        degree,
+        aggressive,
+        num_chunks,
+        num_shreds,
+        bandwidth_limit,
+    );
+
+    println!(
+        "Running benchmark with block_size={} ({}), share_size={}, k={}",
+        block_size,
+        bytes_to_human_readable(block_size),
+        share_size,
+        k
+    );
+
+    // Chạy benchmark
+    let result = simulate_network(&config, &committer, block_size, share_size);
+
+    // In kết quả
+    println!(
+        "Config: nodes={}, degree={}, aggressive={}, num_chunks={}, num_shreds={}, bandwidth_limit={}",
+        config.num_nodes,
+        config.degree,
+        config.aggressive,
+        config.num_chunks,
+        config.num_shreds,
+        config.bandwidth_limit
+    );
+    println!(
+        "Time: {:.2} ms, Bandwidth: {} ({} bytes), Round trips: {}, Avg CPU Usage: {:.2}%",
+        result.time_ms,
+        bytes_to_human_readable(result.bandwidth_bytes),
+        result.bandwidth_bytes,
+        result.round_trips,
+        result.cpu_usage
+    );
 }

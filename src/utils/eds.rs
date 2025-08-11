@@ -12,7 +12,7 @@ pub struct FlatMatrix {
 
 impl FlatMatrix {
     pub fn new(block: &[u8], share_size: usize, k: usize) -> Self {
-        let total_size = k * k * share_size;
+        let total_size = k * k * share_size; // 16 * 16 * 64
         let mut data = block.to_vec();
         if data.len() < total_size {
             data.resize(total_size, 0);

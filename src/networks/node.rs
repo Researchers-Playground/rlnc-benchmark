@@ -338,7 +338,7 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
                                 decoded_bytes.clone(),
                             );
                         }
-                        Err(error) => {
+                        Err(_) => {
                             // decoding incomplete or failed -> ignore for now
                         }
                     }
