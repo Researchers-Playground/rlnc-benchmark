@@ -1,6 +1,6 @@
 use rlnc_benchmark::commitments::ristretto::pedersen::PedersenCommitter;
 use rlnc_benchmark::networks::node::Node;
-use rlnc_benchmark::rlnc::storage::{BlockId, NodeStorage};
+use rlnc_benchmark::networks::storage::core::{BlockId, NodeStorage};
 use rlnc_benchmark::utils::blocks::create_random_block;
 use rlnc_benchmark::utils::bytes::bytes_to_human_readable;
 use rlnc_benchmark::utils::eds::{extended_data_share, FlatMatrix};
@@ -249,11 +249,11 @@ fn simulate_network(
 }
 
 fn main() {
-    let block_size = 16 * 1024;  // 16KB = 16384 bytes
-    let share_size = 64; // share size
+    let block_size = 2 * 1024 * 1024;  // 16KB = 16384 bytes
+    let share_size = 512; // share size
     let num_chunks = 16;
-    let num_nodes = 2;
-    let degree = 1;
+    let num_nodes = 100;
+    let degree = 12;
     let aggressive = 1;
 
     if block_size % share_size != 0 {
@@ -272,7 +272,7 @@ fn main() {
     }
     
     let num_shreds = k; // 16
-    let extended_matrix_data_len = 4 * k * k * share_size;
+    let extended_matrix_data_len = 4 * block_size;
     let shreds_size = (extended_matrix_data_len as f64 / num_shreds as f64).ceil() as usize; // 64
     let chunk_size_in_scalars = shreds_size / num_chunks;
     if chunk_size_in_scalars == 0 {

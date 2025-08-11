@@ -1,8 +1,8 @@
 // basic integration test using InMemoryStorage + pedersen committer
-use super::decoder::NetworkDecoder;
-use super::encoder::NetworkEncoder;
-use super::storage::InMemoryStorage;
-use crate::rlnc::storage::NodeStorage;
+use super::decoder::StorageDecoder;
+use super::encoder::StorageEncoder;
+use super::core::InMemoryStorage;
+use super::core::NodeStorage;
 
 use crate::commitments::ristretto::pedersen::PedersenCommitter;
 
@@ -25,7 +25,7 @@ fn integration_encode_decode_shred() {
     }
 
     // create encoder
-    let encoder = NetworkEncoder::new(block_id, num_shreds, num_chunks_per_shred);
+    let encoder = StorageEncoder::new(block_id, num_shreds, num_chunks_per_shred);
 
     // encode one shred and store several pieces
     let mut piece_idx = 0usize;
@@ -45,7 +45,7 @@ fn integration_encode_decode_shred() {
     storage.store_commitment(block_id, 0, commitment.clone());
 
     // decoder: try decode using pieces indices retrieved from storage
-    let decoder = NetworkDecoder::new(num_chunks_per_shred);
+    let decoder = StorageDecoder::new(num_chunks_per_shred);
     let idxs = storage.list_piece_indices(block_id, 0);
     let decoded = decoder
         .try_decode_shred::<PedersenCommitter, _>(&storage, block_id, 0, &idxs, &commitment)

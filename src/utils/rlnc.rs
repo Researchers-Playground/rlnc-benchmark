@@ -13,6 +13,8 @@ pub enum RLNCError {
     ReceivedAllPieces,
     #[error("Decoding not complete")]
     DecodingNotComplete,
+    #[error("Committer not set for verification")]
+    LackOfCommitter,
     #[error("Invalid data: {0}")]
     InvalidData(String),
 }
@@ -107,12 +109,12 @@ pub struct NetworkDecoder<'a, C: Committer> {
     received_chunks: Vec<Vec<C::Scalar>>,
     commitment: Option<C::Commitment>,
     echelon: Echelon,
-    committer: &'a C,
+    committer: Option<&'a C>,
     piece_count: usize,
 }
 
 impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
-    pub fn new(committer: &'a C, piece_count: usize) -> Self {
+    pub fn new(committer: Option<&'a C>, piece_count: usize) -> Self {
         NetworkDecoder {
             received_chunks: Vec::new(),
             commitment: None,
@@ -186,7 +188,10 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         coded_piece: &CodedPiece<C::Scalar>,
         commitment: &C::Commitment,
     ) -> Result<(), RLNCError> {
-        let is_valid = self.committer.verify(Some(commitment), coded_piece);
+        if self.committer.is_none() {
+            return Err(RLNCError::LackOfCommitter);
+        }
+        let is_valid = self.committer.unwrap().verify(Some(commitment), coded_piece);
         if !is_valid {
             return Err(RLNCError::InvalidData(
                 "Commitment verification failed".to_string(),
@@ -346,7 +351,7 @@ mod tests {
 
         let encoder =
             NetworkEncoder::new(&committer, Some(original_data.clone()), num_chunks).unwrap();
-        let mut decoder = NetworkDecoder::new(&committer, num_chunks);
+        let mut decoder = NetworkDecoder::new(Some(&committer), num_chunks);
         let commitments = encoder.get_commitment().unwrap();
 
         while !decoder.is_already_decoded() {

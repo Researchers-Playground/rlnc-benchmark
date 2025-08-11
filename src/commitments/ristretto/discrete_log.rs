@@ -352,7 +352,7 @@ mod tests {
         let commitment = encoder.get_commitment().unwrap();
         assert!(committer.verify_signature(&coded_piece));
 
-        let decoder = NetworkDecoder::new(&committer, num_packets);
+        let decoder = NetworkDecoder::new(Some(&committer), num_packets);
         let verify_result = decoder
             .verify_coded_piece(&coded_piece, &commitment)
             .is_ok();

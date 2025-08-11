@@ -1,16 +1,11 @@
 use crate::commitments::CodedPiece;
 use crate::commitments::Committer;
-use crate::utils::ristretto::{block_to_chunks, chunk_to_scalars};
 use curve25519_dalek::Scalar;
-
-use crate::rlnc::storage::{BlockId, NodeStorage, ShredId};
+use super::core::{BlockId, NodeStorage, ShredId};
+use crate::utils::rlnc::NetworkEncoder;
 use rand::Rng;
 
-/// NetworkEncoder is stateless except for metadata:
-/// - block: id of extended block (or logical block)
-/// - num_chunks_per_shred: number of chunks RLNC expects per shred
-/// - rand seed/choice for piece indices is left to caller (we return a CodedPiece)
-pub struct NetworkEncoder {
+pub struct StorageEncoder {
     pub block_id: BlockId,
     pub num_shreds: usize,
     pub num_chunks_per_shred: usize,
@@ -26,7 +21,7 @@ fn generate_random_coefficients(length: usize) -> Vec<Scalar> {
         .collect()
 }
 
-impl NetworkEncoder {
+impl StorageEncoder {
     pub fn new(block_id: BlockId, num_shreds: usize, num_chunks_per_shred: usize) -> Self {
         Self {
             block_id,
@@ -40,7 +35,7 @@ impl NetworkEncoder {
     pub fn encode_one_shred<C: Committer<Scalar = Scalar>, S: NodeStorage<C>>(
         &self,
         storage: &S,
-        _committer: &C,
+        committer: &C,
         shred_id: ShredId,
     ) -> Result<CodedPiece<Scalar>, String> {
         // get shred bytes from storage
@@ -48,29 +43,11 @@ impl NetworkEncoder {
             .get_shred(self.block_id, shred_id)
             .ok_or_else(|| "Shred bytes not found in storage".to_string())?;
 
-        // split shred into chunks then into scalars
-        let chunks = block_to_chunks(shred_bytes, self.num_chunks_per_shred)?
-            .into_iter()
-            .map(|data| chunk_to_scalars(data).map_err(|e| e.to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
+        let encoder = NetworkEncoder::new(committer, Some(shred_bytes.to_vec()), self.num_chunks_per_shred).unwrap();
+        let coded_piece = encoder
+            .encode().unwrap();
 
-        if chunks.is_empty() {
-            return Err("no chunks in shred".to_string());
-        }
-
-        // linear combination
-        let coefficients = generate_random_coefficients(chunks.len());
-        let data = (0..chunks[0].len())
-            .map(|i| {
-                coefficients
-                    .iter()
-                    .zip(&chunks)
-                    .map(|(coeff, chunk)| *coeff * chunk[i])
-                    .sum()
-            })
-            .collect();
-
-        Ok(CodedPiece { data, coefficients })
+        Ok(coded_piece)
     }
 
     /// Produce the commitment for one shred (delegates to committer.commit on shredded chunks).
@@ -84,13 +61,9 @@ impl NetworkEncoder {
             .get_shred(self.block_id, shred_id)
             .ok_or_else(|| "Shred bytes not found".to_string())?;
 
-        let chunks = block_to_chunks(shred_bytes, self.num_chunks_per_shred)?
-            .into_iter()
-            .map(|data| chunk_to_scalars(data).map_err(|e| e.to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
+        let encoder = NetworkEncoder::new(committer, Some(shred_bytes.to_vec()), self.num_chunks_per_shred).unwrap();
+        let commitment = encoder.get_commitment();
 
-        committer
-            .commit(&chunks)
-            .map_err(|_| "commit failed".to_string())
+        commitment
     }
 }

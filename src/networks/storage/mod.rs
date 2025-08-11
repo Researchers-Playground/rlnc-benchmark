@@ -1,7 +1,7 @@
 pub mod decoder;
 pub mod encoder;
 pub mod recoder;
-pub mod storage;
+pub mod core;
 
 #[cfg(test)]
 mod tests;

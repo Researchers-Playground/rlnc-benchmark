@@ -1,9 +1,9 @@
 // node.rs
 use crate::commitments::{CodedPiece, Committer};
-use crate::rlnc::decoder::NetworkDecoder;
-use crate::rlnc::encoder::NetworkEncoder;
-use crate::rlnc::recoder::NetworkRecoder;
-use crate::rlnc::storage::{BlockId, InMemoryStorage, NodeStorage, PieceIdx, ShredId};
+use crate::networks::storage::decoder::StorageDecoder;
+use crate::networks::storage::encoder::StorageEncoder;
+use crate::networks::storage::recoder::StorageRecoder;
+use super::storage::core::{BlockId, InMemoryStorage, NodeStorage, PieceIdx, ShredId};
 use crate::utils::eds::{extended_data_share, FlatMatrix};
 
 use curve25519_dalek::{ristretto::RistrettoPoint, scalar::Scalar};
@@ -36,9 +36,9 @@ pub struct Node<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoin
     pub bandwidth_limit: usize,
 
     // helpers
-    pub encoder: NetworkEncoder,
-    pub decoder: NetworkDecoder,
-    pub recoder: NetworkRecoder,
+    pub encoder: StorageEncoder,
+    pub decoder: StorageDecoder,
+    pub recoder: StorageRecoder,
 }
 
 impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'a, C> {
@@ -52,9 +52,9 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
         num_chunks_per_shred: usize,
     ) -> Self {
         let storage = InMemoryStorage::<C>::new();
-        let encoder = NetworkEncoder::new(0, num_shreds, num_chunks_per_shred); // block_id replaced when source created
-        let decoder = NetworkDecoder::new(num_chunks_per_shred);
-        let recoder = NetworkRecoder::new(num_chunks_per_shred);
+        let encoder = StorageEncoder::new(0, num_shreds, num_chunks_per_shred); // block_id replaced when source created
+        let decoder = StorageDecoder::new(num_chunks_per_shred);
+        let recoder = StorageRecoder::new(num_chunks_per_shred);
         Node {
             id,
             committer,
@@ -176,7 +176,7 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
 
         // Activate block and initialize encoder
         self.active_block = Some(block_id);
-        self.encoder = NetworkEncoder::new(block_id, num_shreds, self.num_chunks_per_shred);
+        self.encoder = StorageEncoder::new(block_id, num_shreds, self.num_chunks_per_shred);
 
         // Process each shred: compute commitment and create coded pieces
         for sid in 0..num_shreds {

@@ -1,28 +1,17 @@
 use crate::commitments::CodedPiece;
 use crate::commitments::Committer;
-use crate::utils::matrix::Echelon;
+use crate::utils::rlnc::NetworkDecoder;
+use crate::utils::rlnc::RLNCError;
 use curve25519_dalek::Scalar;
+use super::core::{BlockId, NodeStorage, PieceIdx, ShredId};
 
-use crate::rlnc::storage::{BlockId, NodeStorage, PieceIdx, ShredId};
-
-#[derive(thiserror::Error, Debug)]
-pub enum RLNCError {
-    #[error("Linearly dependent chunk received")]
-    PieceNotUseful,
-    #[error("Received all pieces")]
-    ReceivedAllPieces,
-    #[error("Decoding not complete")]
-    DecodingNotComplete,
-    #[error("Invalid data: {0}")]
-    InvalidData(String),
-}
 
 /// Stateless decoder metadata: just knows how many pieces needed per shred
-pub struct NetworkDecoder {
+pub struct StorageDecoder {
     pub piece_count: usize, // number of chunks per shred (k)
 }
 
-impl NetworkDecoder {
+impl StorageDecoder {
     pub fn new(piece_count: usize) -> Self {
         Self { piece_count }
     }
@@ -66,35 +55,19 @@ impl NetworkDecoder {
             return Err(RLNCError::DecodingNotComplete);
         }
 
-        // echelon solve like original code
-        let mut echelon = Echelon::new(self.piece_count);
-        let mut received_chunks: Vec<Vec<Scalar>> = Vec::new();
+        let mut decoder: NetworkDecoder<C> = NetworkDecoder::new(
+            None,
+            self.piece_count,
+        );
 
-        for piece in &pieces {
-            if !echelon.add_row(piece.coefficients.clone()) {
-                // skip dependent row
-                continue;
-            }
-            received_chunks.push(piece.data.clone());
-            if received_chunks.len() >= self.piece_count {
-                break;
+        for (index, piece) in pieces.iter().enumerate() {
+            if let Err(err) = decoder.direct_decode(piece) {
+                eprintln!("Failed to decode piece at index {}: {:?}", index, err);
             }
         }
-
-        if received_chunks.len() < self.piece_count {
+        if !decoder.is_already_decoded() {
             return Err(RLNCError::DecodingNotComplete);
         }
-
-        let inverse = echelon.inverse().map_err(|e| RLNCError::InvalidData(e))?;
-        let mut padded_result = Vec::new();
-        for i in 0..inverse.len() {
-            for k in 0..received_chunks[0].len() {
-                let scalar_sum: Scalar = (0..inverse.len())
-                    .map(|j| inverse[i][j] * received_chunks[j][k])
-                    .sum();
-                padded_result.extend_from_slice(&scalar_sum.to_bytes());
-            }
-        }
-        Ok(padded_result)
+        decoder.get_decoded_data()
     }
 }
