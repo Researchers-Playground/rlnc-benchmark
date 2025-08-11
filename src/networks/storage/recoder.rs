@@ -16,7 +16,7 @@ impl StorageRecoder {
 
     /// Recode: take available piece indices for a shred (from storage), read pieces, mix them,
     /// and produce a new CodedPiece for forwarding.
-    pub fn recode<C: Committer<Scalar = Scalar>, S: NodeStorage<C>>(
+    pub fn recode<'a, C: Committer<Scalar = Scalar>, S: NodeStorage<'a, C>>(
         &self,
         storage: &S,
         block_id: BlockId,

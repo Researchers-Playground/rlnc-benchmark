@@ -14,6 +14,7 @@ pub enum PedersenError {
     CommitFailed(String),
 }
 
+#[derive(Clone)]
 pub struct PedersenCommitter {
     generators: Vec<RistrettoPoint>,
 }

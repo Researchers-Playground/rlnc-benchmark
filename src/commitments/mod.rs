@@ -15,7 +15,7 @@ impl<S> CodedPiece<S> {
     }
 }
 
-pub trait Committer {
+pub trait Committer: Clone {
     type Scalar: Clone + std::ops::Mul<Output = Self::Scalar> + std::iter::Sum + From<u8>;
     type Commitment: Clone + PartialEq;
     type Error: Error;

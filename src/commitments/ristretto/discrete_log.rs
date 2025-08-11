@@ -46,6 +46,7 @@ impl DiscreteLogParams {
     }
 }
 
+#[derive(Clone)]
 pub struct DiscreteLogCommitter {
     generators: Vec<RistrettoPoint>,
     signature_vector: Vec<Scalar>,

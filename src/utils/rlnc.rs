@@ -105,12 +105,14 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkEncoder<'a, C> {
     }
 }
 
+// TODO: use RREF to store only rref matrix for decoding
+#[derive(Clone)]
 pub struct NetworkDecoder<'a, C: Committer> {
-    received_chunks: Vec<Vec<C::Scalar>>,
+    pub received_chunks: Vec<Vec<C::Scalar>>,
     commitment: Option<C::Commitment>,
-    echelon: Echelon,
+    pub echelon: Echelon,
     committer: Option<&'a C>,
-    piece_count: usize,
+    pub piece_count: usize,
 }
 
 impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
@@ -119,6 +121,22 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
             received_chunks: Vec::new(),
             commitment: None,
             echelon: Echelon::new(piece_count),
+            committer,
+            piece_count,
+        }
+    }
+
+    pub fn from(
+        received_chunks: Vec<Vec<C::Scalar>>,
+        echelon: Echelon,
+        piece_count: usize,
+        commitment: Option<C::Commitment>,
+        committer: Option<&'a C>,
+    ) -> Self {
+        NetworkDecoder {
+            received_chunks,
+            commitment,
+            echelon,
             committer,
             piece_count,
         }
@@ -191,7 +209,10 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         if self.committer.is_none() {
             return Err(RLNCError::LackOfCommitter);
         }
-        let is_valid = self.committer.unwrap().verify(Some(commitment), coded_piece);
+        let is_valid = self
+            .committer
+            .unwrap()
+            .verify(Some(commitment), coded_piece);
         if !is_valid {
             return Err(RLNCError::InvalidData(
                 "Commitment verification failed".to_string(),
