@@ -1,8 +1,8 @@
 // basic integration test using InMemoryStorage + pedersen committer
-use super::decoder::StorageDecoder;
-use super::encoder::StorageEncoder;
 use super::core::InMemoryStorage;
 use super::core::NodeStorage;
+use super::decoder::StorageDecoder;
+use super::encoder::StorageEncoder;
 
 use crate::commitments::ristretto::pedersen::PedersenCommitter;
 

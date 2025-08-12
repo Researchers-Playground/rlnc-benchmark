@@ -1,10 +1,9 @@
-
 use crate::commitments::CodedPiece;
 use crate::commitments::Committer;
 use crate::utils::rlnc::NetworkDecoder;
 use curve25519_dalek::Scalar;
-use std::collections::{HashMap, HashSet};
 use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 /// BlockId: bạn có thể thay bằng kiểu phù hợp
 pub type BlockId = usize;
@@ -48,7 +47,11 @@ pub trait NodeStorage<'a, C: Committer<Scalar = Scalar>> {
     // store decoded shred with decoder
     fn store_decoded(&mut self, block: BlockId, shred: ShredId, decoder: NetworkDecoder<'a, C>);
     fn get_decoded(&self, block: BlockId, shred: ShredId) -> Option<&NetworkDecoder<'a, C>>;
-    fn get_mut_decoded(&mut self, block: BlockId, shred: ShredId) -> Option<&mut NetworkDecoder<'a, C>>;
+    fn get_mut_decoded(
+        &mut self,
+        block: BlockId,
+        shred: ShredId,
+    ) -> Option<&mut NetworkDecoder<'a, C>>;
 
     fn get_decoded_shred(&self, block: BlockId, shred: ShredId) -> Option<&Vec<u8>>;
 
@@ -81,7 +84,6 @@ impl<'a, C: Committer<Scalar = Scalar>> InMemoryStorage<'a, C> {
 
 impl<'a, C: Committer<Scalar = Scalar>> NodeStorage<'a, C> for InMemoryStorage<'a, C> {
     type Commitment = C::Commitment;
-
 
     fn store_shred(&mut self, block: BlockId, shred: ShredId, bytes: Vec<u8>) {
         self.shreds.insert((block, shred), bytes);
@@ -153,7 +155,11 @@ impl<'a, C: Committer<Scalar = Scalar>> NodeStorage<'a, C> for InMemoryStorage<'
         self.decoded.get(&(block, shred))
     }
 
-    fn get_mut_decoded(&mut self, block: BlockId, shred: ShredId) -> Option<&mut NetworkDecoder<'a, C>> {
+    fn get_mut_decoded(
+        &mut self,
+        block: BlockId,
+        shred: ShredId,
+    ) -> Option<&mut NetworkDecoder<'a, C>> {
         self.decoded.get_mut(&(block, shred))
     }
 
