@@ -3,7 +3,6 @@ use crate::commitments::CodedPiece;
 use crate::commitments::Committer;
 use crate::utils::rlnc::NetworkEncoder;
 use curve25519_dalek::Scalar;
-use rand::Rng;
 
 pub struct StorageEncoder {
     pub block_id: BlockId,

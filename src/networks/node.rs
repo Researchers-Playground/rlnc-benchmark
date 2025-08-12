@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 // node.rs
 use super::storage::core::{BlockId, InMemoryStorage, NodeStorage, PieceIdx, ShredId};
 use crate::commitments::{CodedPiece, Committer};
@@ -101,71 +103,88 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
     /// new_source: take `data` (original block), optionally apply 2D matrix extension,
     /// split into num_shreds and store shreds -> create RLNC coded pieces per shred and store them + commitments.
     pub fn new_source(
-        &mut self,
-        block_id: BlockId,
-        data: Vec<u8>,
-        use_rs: bool,
-        share_size: usize, // New parameter for share_size
-    ) -> Result<(), String> {
-        let mut num_shreds = self.num_shreds;
-        let extended: Vec<u8>;
+    &mut self,
+    block_id: BlockId,
+    data: Vec<u8>,
+    use_rs: bool,
+    share_size: usize,
+) -> Result<(), String> {
+    let start_total = Instant::now();
+    let mut num_shreds = self.num_shreds;
+    let extended: Vec<u8>;
 
-        if use_rs {
-            // Calculate k based on data size and share_size
-            let num_shares = (data.len() as f64 / share_size as f64).ceil() as usize;
-            let k = (num_shares as f64).sqrt().ceil() as usize;
-            if k == 0 {
-                return Err("Invalid k: data size too small or share_size too large".to_string());
-            }
-
-            // Extend data with 2D matrix
-            extended = Self::extend_2d_matrix(&data, share_size, k)?;
-
-            // Update num_shreds = k for RS coding
-            num_shreds = k;
-        } else {
-            // Non-RS: check if data is divisible by num_shreds
-            if data.len() % self.num_shreds != 0 {
-                return Err(format!(
-                    "data.len() {} not divisible by num_shreds {}",
-                    data.len(),
-                    self.num_shreds
-                ));
-            }
-            extended = data;
+    let start_extend = Instant::now();
+    if use_rs {
+        let num_shares = (data.len() as f64 / share_size as f64).ceil() as usize;
+        let k = (num_shares as f64).sqrt().ceil() as usize;
+        if k == 0 {
+            return Err("Invalid k: data size too small or share_size too large".to_string());
         }
-
-        // Update num_shreds of node
-        self.num_shreds = num_shreds;
-
-        // Split extended into shreds and store
-        println!("Extended block len: {:?}", extended.len());
-        let shred_size = (extended.len() as f64 / num_shreds as f64).ceil() as usize;
-        self.encoder = StorageEncoder::new(block_id, num_shreds, self.num_chunks_per_shred);
-        for sid in 0..num_shreds {
-            let start = sid * shred_size;
-            let end = std::cmp::min(start + shred_size, extended.len());
-            let shred_bytes = extended[start..end].to_vec();
-            self.storage.store_shred(block_id, sid, shred_bytes.clone());
-
-            let commitment = self
-                .encoder
-                .get_shred_commitment::<C, _>(&self.storage, self.committer, sid)
-                .map_err(|e| format!("Commit failed for shred {}: {}", sid, e))?;
-            self.storage
-                .store_commitment(block_id, sid, commitment.clone());
-
-            println!(
-                "Store shred id {:?}, value: {:?} and it's commitment",
-                sid,
-                &shred_bytes[..8]
-            );
+        extended = Self::extend_2d_matrix(&data, share_size, k)?;
+        num_shreds = k;
+        println!(
+            "new_source: Extended matrix in {:.2} ms",
+            start_extend.elapsed().as_secs_f64() * 1000.0
+        );
+    } else {
+        if data.len() % self.num_shreds != 0 {
+            return Err(format!(
+                "data.len() {} not divisible by num_shreds {}",
+                data.len(),
+                self.num_shreds
+            ));
         }
-
-        // Activate block and initialize encoder
-        self.active_block = Some(block_id);
-        Ok(())
+        extended = data;
+        println!(
+            "new_source: Skipped extension in {:.2} ms",
+            start_extend.elapsed().as_secs_f64() * 1000.0
+        );
     }
+
+    self.num_shreds = num_shreds;
+    println!("Extended block len: {:?}", extended.len());
+    let shred_size = (extended.len() as f64 / num_shreds as f64).ceil() as usize;
+    self.encoder = StorageEncoder::new(block_id, num_shreds, self.num_chunks_per_shred);
+
+    let start_store = Instant::now();
+    for sid in 0..num_shreds {
+        let start = sid * shred_size;
+        let end = std::cmp::min(start + shred_size, extended.len());
+        let shred_bytes = extended[start..end].to_vec();
+        self.storage.store_shred(block_id, sid, shred_bytes.clone());
+
+        let start_commit = Instant::now();
+        let commitment = self
+            .encoder
+            .get_shred_commitment::<C, _>(&self.storage, self.committer, sid)
+            .map_err(|e| format!("Commit failed for shred {}: {}", sid, e))?;
+        println!(
+            "new_source: Commitment for shred {} in {:.2} ms",
+            sid,
+            start_commit.elapsed().as_secs_f64() * 1000.0
+        );
+
+        self.storage
+            .store_commitment(block_id, sid, commitment.clone());
+
+        println!(
+            "Store shred id {:?}, value: {:?} and it's commitment",
+            sid,
+            &shred_bytes[..std::cmp::min(8, shred_bytes.len())]
+        );
+    }
+    println!(
+        "new_source: Stored shreds and commitments in {:.2} ms",
+        start_store.elapsed().as_secs_f64() * 1000.0
+    );
+
+    self.active_block = Some(block_id);
+    println!(
+        "new_source: Total time {:.2} ms",
+        start_total.elapsed().as_secs_f64() * 1000.0
+    );
+    Ok(())
+}
 
     /// Publish: publish a coded block to neighbors in publisher's mesh.
     pub fn publish(
