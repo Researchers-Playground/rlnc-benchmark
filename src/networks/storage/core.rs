@@ -1,10 +1,9 @@
-
 use crate::commitments::CodedPiece;
 use crate::commitments::Committer;
 use crate::utils::rlnc::NetworkDecoder;
 use curve25519_dalek::Scalar;
-use std::collections::{HashMap, HashSet};
 use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 /// BlockId: bạn có thể thay bằng kiểu phù hợp
 pub type BlockId = usize;
@@ -18,6 +17,7 @@ pub trait NodeStorage<'a, C: Committer<Scalar = Scalar>> {
     // Shred (raw bytes)
     fn store_shred(&mut self, block: BlockId, shred: ShredId, bytes: Vec<u8>);
     fn get_shred(&self, block: BlockId, shred: ShredId) -> Option<&Vec<u8>>;
+    fn list_shreds(&self, block: BlockId) -> Vec<(ShredId, &Vec<u8>)>;
 
     // Coded piece (RLNC output)
     fn store_coded_piece(
@@ -33,7 +33,6 @@ pub trait NodeStorage<'a, C: Committer<Scalar = Scalar>> {
         shred: ShredId,
         idx: PieceIdx,
     ) -> Option<&CodedPiece<Scalar>>;
-    fn list_shreds(&self, block: BlockId) -> Vec<(ShredId, &Vec<u8>)>;
 
     // get list of piece indices available for a shred
     fn list_piece_indices(&self, block: BlockId, shred: ShredId) -> Vec<PieceIdx>;
@@ -41,19 +40,16 @@ pub trait NodeStorage<'a, C: Committer<Scalar = Scalar>> {
     // Commitment per-shred (one commitment identifies all coded pieces for that shred)
     fn store_commitment(&mut self, block: BlockId, shred: ShredId, commitment: Self::Commitment);
     fn get_commitment(&self, block: BlockId, shred: ShredId) -> Option<&Self::Commitment>;
-
-    // decoded shred storage (bytes)
-    fn store_decoded_shred(&mut self, block: BlockId, shred: ShredId, bytes: Vec<u8>);
+    fn list_commitments(&self, block: BlockId) -> Vec<(ShredId, &Self::Commitment)>;
 
     // store decoded shred with decoder
     fn store_decoded(&mut self, block: BlockId, shred: ShredId, decoder: NetworkDecoder<'a, C>);
     fn get_decoded(&self, block: BlockId, shred: ShredId) -> Option<&NetworkDecoder<'a, C>>;
-    fn get_mut_decoded(&mut self, block: BlockId, shred: ShredId) -> Option<&mut NetworkDecoder<'a, C>>;
-
-    fn get_decoded_shred(&self, block: BlockId, shred: ShredId) -> Option<&Vec<u8>>;
-
-    // helper: check if a block is fully reconstructed
-    fn list_decoded_shreds(&self, block: BlockId) -> Vec<ShredId>;
+    fn get_mut_decoded(
+        &mut self,
+        block: BlockId,
+        shred: ShredId,
+    ) -> Option<&mut NetworkDecoder<'a, C>>;
 }
 
 /// InMemory implementation (for testing & local simulation)
@@ -62,7 +58,6 @@ pub struct InMemoryStorage<'a, C: Committer<Scalar = Scalar>> {
     coded: HashMap<(BlockId, ShredId, PieceIdx), CodedPiece<Scalar>>,
     pub pieces_index: HashMap<(BlockId, ShredId), HashSet<PieceIdx>>,
     commitments: HashMap<(BlockId, ShredId), C::Commitment>,
-    decoded_shreds: HashMap<(BlockId, ShredId), Vec<u8>>,
     decoded: HashMap<(BlockId, ShredId), NetworkDecoder<'a, C>>,
 }
 
@@ -73,7 +68,6 @@ impl<'a, C: Committer<Scalar = Scalar>> InMemoryStorage<'a, C> {
             coded: HashMap::new(),
             pieces_index: HashMap::new(),
             commitments: HashMap::new(),
-            decoded_shreds: HashMap::new(),
             decoded: HashMap::new(),
         }
     }
@@ -81,7 +75,6 @@ impl<'a, C: Committer<Scalar = Scalar>> InMemoryStorage<'a, C> {
 
 impl<'a, C: Committer<Scalar = Scalar>> NodeStorage<'a, C> for InMemoryStorage<'a, C> {
     type Commitment = C::Commitment;
-
 
     fn store_shred(&mut self, block: BlockId, shred: ShredId, bytes: Vec<u8>) {
         self.shreds.insert((block, shred), bytes);
@@ -92,11 +85,14 @@ impl<'a, C: Committer<Scalar = Scalar>> NodeStorage<'a, C> for InMemoryStorage<'
     }
 
     fn list_shreds(&self, block: BlockId) -> Vec<(ShredId, &Vec<u8>)> {
-        self.shreds
+        let mut shreds: Vec<_> = self
+            .shreds
             .par_iter()
             .filter(|((b, _), _)| *b == block)
             .map(|((_, s), bytes)| (*s, bytes))
-            .collect()
+            .collect();
+        shreds.par_sort_by_key(|(id, _)| *id);
+        shreds
     }
 
     fn store_coded_piece(
@@ -137,12 +133,14 @@ impl<'a, C: Committer<Scalar = Scalar>> NodeStorage<'a, C> for InMemoryStorage<'
         self.commitments.get(&(block, shred))
     }
 
-    fn store_decoded_shred(&mut self, block: BlockId, shred: ShredId, bytes: Vec<u8>) {
-        self.decoded_shreds.insert((block, shred), bytes);
-    }
-
-    fn get_decoded_shred(&self, block: BlockId, shred: ShredId) -> Option<&Vec<u8>> {
-        self.decoded_shreds.get(&(block, shred))
+    fn list_commitments(&self, block: BlockId) -> Vec<(ShredId, &Self::Commitment)> {
+        let mut commitments: Vec<_> = (&self.commitments)
+            .par_iter()
+            .filter(|((b, _), _)| *b == block)
+            .map(|((_, s), c)| (*s, c))
+            .collect();
+        commitments.par_sort_by_key(|(id, _)| *id);
+        commitments
     }
 
     fn store_decoded(&mut self, block: BlockId, shred: ShredId, decoder: NetworkDecoder<'a, C>) {
@@ -153,15 +151,11 @@ impl<'a, C: Committer<Scalar = Scalar>> NodeStorage<'a, C> for InMemoryStorage<'
         self.decoded.get(&(block, shred))
     }
 
-    fn get_mut_decoded(&mut self, block: BlockId, shred: ShredId) -> Option<&mut NetworkDecoder<'a, C>> {
+    fn get_mut_decoded(
+        &mut self,
+        block: BlockId,
+        shred: ShredId,
+    ) -> Option<&mut NetworkDecoder<'a, C>> {
         self.decoded.get_mut(&(block, shred))
-    }
-
-    fn list_decoded_shreds(&self, block: BlockId) -> Vec<ShredId> {
-        self.decoded_shreds
-            .keys()
-            .filter(|(b, _)| *b == block)
-            .map(|(_, s)| *s)
-            .collect()
     }
 }

@@ -49,6 +49,11 @@ impl StorageDecoder {
         let res = decoder.direct_decode(coded_piece);
 
         if res.is_ok() {
+            let piece_indices = storage
+                .list_piece_indices(block_id, shred_id)
+                .into_iter()
+                .collect::<Vec<PieceIdx>>();
+            storage.store_coded_piece(block_id, shred_id, piece_indices.len(), coded_piece.clone());
             storage.store_decoded(block_id, shred_id, decoder.clone());
         }
 

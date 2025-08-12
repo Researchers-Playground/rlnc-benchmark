@@ -15,9 +15,9 @@ impl<S> CodedPiece<S> {
     }
 }
 
-pub trait Committer: Clone {
+pub trait Committer: Clone + Send + Sync {
     type Scalar: Clone + std::ops::Mul<Output = Self::Scalar> + std::iter::Sum + From<u8>;
-    type Commitment: Clone + PartialEq;
+    type Commitment: Clone + Send + Sync + PartialEq;
     type Error: Error;
 
     fn commit(&self, chunks: &Vec<Vec<Scalar>>) -> Result<Self::Commitment, Self::Error>;

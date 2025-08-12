@@ -24,7 +24,9 @@ pub struct Node<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoin
     pub active_block: Option<BlockId>,
     pub num_shreds: usize,
     pub num_chunks_per_shred: usize,
-    pub bandwidth_limit: usize,
+
+    // coded custody size
+    pub custody_size: usize,
 
     // helpers
     pub encoder: StorageEncoder,
@@ -38,9 +40,9 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
         id: usize,
         committer: &'a C,
         neighbors: Vec<usize>,
-        bandwidth_limit: usize,
         num_shreds: usize,
         num_chunks_per_shred: usize,
+        custody_size: usize,
     ) -> Self {
         let storage = InMemoryStorage::<C>::new();
         let encoder = StorageEncoder::new(0, num_shreds, num_chunks_per_shred); // block_id replaced when source created
@@ -54,7 +56,7 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
             active_block: None,
             num_shreds,
             num_chunks_per_shred,
-            bandwidth_limit,
+            custody_size,
             encoder,
             decoder,
             recoder,
@@ -139,7 +141,6 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
         self.num_shreds = num_shreds;
 
         // Split extended into shreds and store
-        println!("Extended block len: {:?}", extended.len());
         let shred_size = (extended.len() as f64 / num_shreds as f64).ceil() as usize;
         self.encoder = StorageEncoder::new(block_id, num_shreds, self.num_chunks_per_shred);
         for sid in 0..num_shreds {
@@ -173,34 +174,64 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
         block_id: BlockId,
         source_id: usize,
     ) -> Result<Vec<(usize, BroadcastCodedBlockMsg<Vec<RistrettoPoint>>)>, String> {
-        let all_shreds = self.storage.list_shreds(block_id);
+        // If not own commitments
+        if self.storage.list_commitments(block_id).len() != self.num_shreds {
+            return Ok(Vec::new());
+        }
 
-        let (commitments, coded_pieces): (Vec<_>, Vec<_>) = all_shreds
-            .iter()
-            .map(|(id, _)| {
-                let coded_piece = self
-                    .encoder
-                    .encode_one_shred(&self.storage, self.committer, *id)
-                    .map_err(|e| format!("Encode failed for shred {}: {}", id, e))?;
+        let (commitments, coded_pieces) = if self.is_active_node(block_id) {
+            let all_shreds = self.storage.list_shreds(block_id);
+            all_shreds
+                .par_iter()
+                .map(|(id, _)| {
+                    let coded_piece = self
+                        .encoder
+                        .encode_one_shred(&self.storage, self.committer, *id)
+                        .map_err(|e| format!("Encode failed for shred {}: {}", id, e))?;
 
-                let commitment = self
-                    .encoder
-                    .get_shred_commitment(&self.storage, self.committer, *id)
-                    .map_err(|e| format!("Commit failed for shred {}: {}", id, e))?;
+                    // This should be passed all the time since active node always has commitments in store.
+                    let commitment = self.storage.get_commitment(block_id, *id).unwrap().clone();
 
-                Ok((commitment, coded_piece))
-            })
-            .collect::<Result<Vec<(Vec<RistrettoPoint>, CodedPiece)>, String>>()?
-            .into_par_iter()
-            .unzip();
+                    Ok((commitment, coded_piece))
+                })
+                .collect::<Result<Vec<(Vec<RistrettoPoint>, CodedPiece)>, String>>()?
+                .into_par_iter()
+                .unzip()
+        } else {
+            // If any shreds are missing
+            if (0..self.num_shreds)
+                .any(|shred_id| self.storage.list_piece_indices(block_id, shred_id).len() == 0)
+            {
+                return Ok(Vec::new());
+            }
 
-        // Create messages for each neighbor
+            (0..self.num_shreds)
+                .into_par_iter()
+                .map(|shred_id| {
+                    let piece_indices = self.storage.list_piece_indices(block_id, shred_id);
+                    let recoded_piece = self
+                        .recoder
+                        .recode(&self.storage, block_id, shred_id, &piece_indices)
+                        .map_err(|e| format!("Recode failed for shred {}: {}", shred_id, e))?;
+                    let commitment = self
+                        .storage
+                        .get_commitment(block_id, shred_id)
+                        .unwrap()
+                        .clone();
+                    Ok((commitment, recoded_piece))
+                })
+                .collect::<Result<Vec<(Vec<RistrettoPoint>, CodedPiece)>, String>>()?
+                .into_par_iter()
+                .unzip()
+        };
+
         let message = BroadcastCodedBlockMsg::new(block_id, coded_pieces, commitments, source_id);
         let mut messages_per_neighbor: Vec<(usize, BroadcastCodedBlockMsg<Vec<RistrettoPoint>>)> =
             Vec::new();
         for &nbr in &self.neighbors {
             messages_per_neighbor.push((nbr, message.clone()));
         }
+
         Ok(messages_per_neighbor)
     }
 
@@ -250,7 +281,8 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
         Ok(())
     }
 
-    pub fn already_decode_block(&self, block_id: BlockId) -> bool {
+    // NOTE: this will be true if node is publisher or decoded all data
+    pub fn is_active_node(&self, block_id: BlockId) -> bool {
         // Check if we have decoded all shreds for this block
         let decoded_shreds = self.storage.list_shreds(block_id);
         let non_empty_count = decoded_shreds
@@ -260,108 +292,25 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
         non_empty_count == self.num_shreds
     }
 
-    /// TODO: refactor this code later to request_da_message and receive_da_message
-    pub fn receive_da_messages(
+    // TODO: request da message from neighbor nodes
+    pub fn request_da_message(
+        &self,
+        _block_id: BlockId,
+        _shred_ids: Vec<ShredId>,
+    ) -> Result<Vec<RetrieveShredMsg<Vec<RistrettoPoint>>>, String> {
+        Ok(Vec::new())
+    }
+
+    /// TODO: handle received DA message.
+    pub fn receive_da_message(
         &mut self,
-        msgs: Vec<RetrieveShredMsg<Vec<RistrettoPoint>>>,
+        _msgs: Vec<RetrieveShredMsg<Vec<RistrettoPoint>>>,
     ) -> Result<(), String> {
-        for msg in msgs.into_iter() {
-            // verify commitment first via decoder
-            let commitment = msg.commitment.clone();
-            let piece = msg.piece.clone();
-            // verify using stateless decoder API
-            self.decoder
-                .verify_piece::<C, InMemoryStorage<C>>(self.committer, &piece, &commitment)
-                .map_err(|e| format!("verify failed: {:?}", e))?;
-
-            // Store the commitment
-            self.storage
-                .store_commitment(msg.block_id, msg.shred_id, commitment.clone());
-
-            // store the coded piece to storage
-            // choose piece_idx scheme: we use provided piece_idx if free, otherwise append at max_index+1
-            let existing = self
-                .storage
-                .get_coded_piece(msg.block_id, msg.shred_id, msg.piece_idx);
-            let store_idx = if existing.is_some() {
-                // find next free index
-                let mut next = 0usize;
-                loop {
-                    if self
-                        .storage
-                        .get_coded_piece(msg.block_id, msg.shred_id, next)
-                        .is_none()
-                    {
-                        break next;
-                    }
-                    next += 1;
-                }
-            } else {
-                msg.piece_idx
-            };
-            self.storage
-                .store_coded_piece(msg.block_id, msg.shred_id, store_idx, piece.clone());
-
-            // update recoder: we decide to recode if we have at least 2 pieces for that shred
-            let indices = self.storage.list_piece_indices(msg.block_id, msg.shred_id);
-            if indices.len() >= 2 {
-                // choose some indices to mix (for example all present)
-                let mix_idxs = indices.clone();
-                let new_piece = self
-                    .recoder
-                    .recode::<C, _>(&self.storage, msg.block_id, msg.shred_id, &mix_idxs)
-                    .map_err(|e| format!("recode failed: {}", e))?;
-                // store new recoded piece (use next free index)
-                let mut next_idx = 0usize;
-                loop {
-                    if self
-                        .storage
-                        .get_coded_piece(msg.block_id, msg.shred_id, next_idx)
-                        .is_none()
-                    {
-                        break;
-                    }
-                    next_idx += 1;
-                }
-                self.storage
-                    .store_coded_piece(msg.block_id, msg.shred_id, next_idx, new_piece);
-            }
-
-            // try decode shred: gather indices and call decoder.try_decode_shred
-            let piece_indices = self.storage.list_piece_indices(msg.block_id, msg.shred_id);
-            if piece_indices.len() >= self.num_chunks_per_shred {
-                // attempt decode
-                if let Some(commit) = self.storage.get_commitment(msg.block_id, msg.shred_id) {
-                    match self.decoder.try_decode_shred::<C, _>(
-                        &self.storage,
-                        msg.block_id,
-                        msg.shred_id,
-                        &piece_indices,
-                        commit,
-                    ) {
-                        Ok(decoded_bytes) => {
-                            // store decoded shred
-                            self.storage.store_decoded_shred(
-                                msg.block_id,
-                                msg.shred_id,
-                                decoded_bytes.clone(),
-                            );
-                        }
-                        Err(_) => {
-                            // decoding incomplete or failed -> ignore for now
-                        }
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 
-    /// TODO: we already decode partially in 'subcribe', this one should use for reconstructing from peers
-    pub fn try_reconstruct_block(&self, block_id: BlockId, _use_rs: bool) -> Option<Vec<u8>> {
-        None
-    }
+    /// TODO: this function will reconstruct the block from its peers.
+    pub fn reconstruct_block(&self, block_id: BlockId) {}
 }
 
 #[cfg(test)]
@@ -414,20 +363,19 @@ mod tests {
     #[test]
     fn test_node_new() {
         let committer = MockCommitter;
-        let node = Node::new(1, &committer, vec![2, 3], 10, 4, 16);
+        let node = Node::new(1, &committer, vec![2, 3], 4, 16, 1);
         assert_eq!(node.id, 1);
         assert_eq!(node.neighbors, vec![2, 3]);
-        assert_eq!(node.bandwidth_limit, 10);
         assert_eq!(node.num_shreds, 4);
         assert_eq!(node.num_chunks_per_shred, 16);
+        assert_eq!(node.custody_size, 1);
         assert!(node.active_block.is_none());
-        assert!(node.storage.list_decoded_shreds(0).is_empty());
     }
 
     #[test]
     fn test_new_source_no_rs() {
         let committer = MockCommitter;
-        let mut node = Node::new(1, &committer, vec![2], 10, 4, 16);
+        let mut node = Node::new(1, &committer, vec![2], 4, 16, 1);
         let block_id = 1;
         let data = create_random_block(2048); // 2KB, chia hết cho 4
         let result = node.new_source(block_id, data.clone(), false, 512);
@@ -445,7 +393,7 @@ mod tests {
     #[test]
     fn test_new_source_no_rs_invalid_size() {
         let committer = MockCommitter;
-        let mut node = Node::new(1, &committer, vec![2], 10, 4, 16);
+        let mut node = Node::new(1, &committer, vec![2], 4, 16, 1);
         let block_id = 1;
         let data = create_random_block(1000); // Không chia hết cho 4
         let result = node.new_source(block_id, data, false, 512);
@@ -459,7 +407,7 @@ mod tests {
         const BLOCK_SIZE: usize = 2 * 1024 * 1024; // 2MB
         let k = ((BLOCK_SIZE / SHARE_SIZE) as f64).sqrt().ceil() as usize; // k=64
         let committer = MockCommitter;
-        let mut node = Node::new(1, &committer, vec![2], 10, 4, 16);
+        let mut node = Node::new(1, &committer, vec![2], 4, 16, 1);
         let block_id = 1;
         let data = create_random_block(BLOCK_SIZE);
         let result = node.new_source(block_id, data.clone(), true, 512);
@@ -484,28 +432,14 @@ mod tests {
         let data = create_random_block(512);
         println!("Block data len: {}", data.len());
 
-        let mut source = Node::new(
-            1,
-            &committer,
-            vec![2],
-            num_shreds * (num_chunks + 2),
-            num_shreds,
-            num_chunks,
-        );
+        let mut source = Node::new(1, &committer, vec![2], num_shreds, num_chunks, 1);
         assert!(source
             .new_source(block_id, data.clone(), false, 512)
             .is_ok());
 
-        let mut receiver = Node::new(
-            2,
-            &committer,
-            vec![1],
-            num_shreds * (num_chunks + 2),
-            num_shreds,
-            num_chunks,
-        );
+        let mut receiver = Node::new(2, &committer, vec![1], num_shreds, num_chunks, 1);
 
-        assert!(!receiver.already_decode_block(block_id));
+        assert!(!receiver.is_active_node(block_id));
         // Send and receive unique messages multiple times to ensure 4+ independent pieces
         for i in 0..num_chunks {
             let messages = source.publish(block_id, 1).unwrap();
@@ -518,7 +452,7 @@ mod tests {
         }
 
         // node should have all shreds decoded
-        assert!(receiver.already_decode_block(block_id));
+        assert!(receiver.is_active_node(block_id));
     }
 
     #[test]
@@ -531,15 +465,12 @@ mod tests {
         let num_chunks = 4; // nhỏ hơn 16
         let data = create_random_block(BLOCK_SIZE);
 
-        // đủ để gửi tất cả pieces của tất cả shreds
-        let bw = k * (num_chunks + 2);
-
-        let mut source = Node::new(1, &committer, vec![2], bw, k, num_chunks);
+        let mut source = Node::new(1, &committer, vec![2], k, num_chunks, 1);
         assert!(source
             .new_source(block_id, data.clone(), true, SHARE_SIZE)
             .is_ok());
 
-        let mut receiver = Node::new(2, &committer, vec![1], bw, k, num_chunks);
+        let mut receiver = Node::new(2, &committer, vec![1], k, num_chunks, 1);
 
         for (_, _) in (0..num_chunks).enumerate() {
             let messages = source.publish(block_id, 1).unwrap();
@@ -547,7 +478,7 @@ mod tests {
             let message = messages[0].1.clone();
             assert!(receiver.subcribe(message).is_ok());
         }
-        assert!(receiver.already_decode_block(block_id));
+        assert!(receiver.is_active_node(block_id));
     }
 
     #[test]
@@ -562,15 +493,12 @@ mod tests {
         let num_chunks = 4; // cần >= rank để decode một shred
         let data = create_random_block(BLOCK_SIZE); // không cần pad
 
-        // đủ băng thông để gửi (num_chunks+2) pieces cho MỖI shred trong 1 lần
-        let bw = k * (num_chunks + 2);
-
-        let mut source = Node::new(1, &committer, vec![2], bw, k, num_chunks);
+        let mut source = Node::new(1, &committer, vec![2], k, num_chunks, 1);
         assert!(source
             .new_source(block_id, data.clone(), true, SHARE_SIZE)
             .is_ok());
 
-        let mut receiver = Node::new(2, &committer, vec![1], bw, k, num_chunks);
+        let mut receiver = Node::new(2, &committer, vec![1], k, num_chunks, 1);
 
         for _ in 0..num_chunks {
             let messages = source.publish(block_id, 1).unwrap();
@@ -578,18 +506,18 @@ mod tests {
             assert!(receiver.subcribe(message).is_ok());
         }
 
-        assert!(receiver.already_decode_block(block_id));
+        assert!(receiver.is_active_node(block_id));
 
         // Kiểm tra dữ liệu đã được phục hồi đúng
-        // let decoded_shred = receiver.storage.list_shreds(block_id);
-        // // check whether it is equal the original data
-        // let mut reconstructed_data: Vec<u8> = Vec::new();
-        // for (_, shred_data) in decoded_shred {
-        //     reconstructed_data.extend(shred_data.to_vec());
-        // }
+        let decoded_shred = receiver.storage.list_shreds(block_id);
+        // check whether it is equal the original data
+        let mut reconstructed_data: Vec<u8> = Vec::new();
+        for (_, shred_data) in decoded_shred {
+            reconstructed_data.extend(shred_data.to_vec());
+        }
 
-        // let original_matrix = FlatMatrix::new(&data, SHARE_SIZE, k);
-        // let extended_matrix = extended_data_share(&original_matrix, k);
-        // assert_eq!(reconstructed_data, *extended_matrix.data());
+        let original_matrix = FlatMatrix::new(&data, SHARE_SIZE, k);
+        let extended_matrix = extended_data_share(&original_matrix, k);
+        assert_eq!(reconstructed_data, *extended_matrix.data());
     }
 }
