@@ -72,4 +72,8 @@ impl<C> BroadcastCodedBlockMsg<C> {
     pub fn get_type(self) -> String {
         self._type
     }
+
+    pub fn coded_piece_size_in_bytes(&self) -> usize {
+        self.coded_pieces.len() * size_of::<CodedPiece<Scalar>>()
+    }
 }

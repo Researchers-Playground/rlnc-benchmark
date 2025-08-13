@@ -6,6 +6,7 @@ use crate::networks::storage::decoder::StorageDecoder;
 use crate::networks::storage::encoder::StorageEncoder;
 use crate::networks::storage::recoder::StorageRecoder;
 use crate::utils::eds::{extended_data_share, FlatMatrix};
+use crate::utils::rlnc::RLNCError;
 use rayon::prelude::*;
 
 use curve25519_dalek::{ristretto::RistrettoPoint, scalar::Scalar};
@@ -173,13 +174,16 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
         &self,
         block_id: BlockId,
         source_id: usize,
-    ) -> Result<Vec<(usize, BroadcastCodedBlockMsg<Vec<RistrettoPoint>>)>, String> {
+    ) -> Result<BroadcastCodedBlockMsg<Vec<RistrettoPoint>>, String> {
         // If not own commitments
-        if self.storage.list_commitments(block_id).len() != self.num_shreds {
-            return Ok(Vec::new());
+        if !self.is_active_node(block_id) {
+            return Err(format!(
+                "Node {} is not active for block {}",
+                self.id, block_id
+            ));
         }
 
-        let (commitments, coded_pieces) = if self.is_active_node(block_id) {
+        let (commitments, coded_pieces) = {
             let all_shreds = self.storage.list_shreds(block_id);
             all_shreds
                 .par_iter()
@@ -197,42 +201,21 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
                 .collect::<Result<Vec<(Vec<RistrettoPoint>, CodedPiece)>, String>>()?
                 .into_par_iter()
                 .unzip()
-        } else {
-            // If any shreds are missing
-            if (0..self.num_shreds)
-                .any(|shred_id| self.storage.list_piece_indices(block_id, shred_id).len() == 0)
-            {
-                return Ok(Vec::new());
-            }
-
-            (0..self.num_shreds)
-                .into_par_iter()
-                .map(|shred_id| {
-                    let piece_indices = self.storage.list_piece_indices(block_id, shred_id);
-                    let recoded_piece = self
-                        .recoder
-                        .recode(&self.storage, block_id, shred_id, &piece_indices)
-                        .map_err(|e| format!("Recode failed for shred {}: {}", shred_id, e))?;
-                    let commitment = self
-                        .storage
-                        .get_commitment(block_id, shred_id)
-                        .unwrap()
-                        .clone();
-                    Ok((commitment, recoded_piece))
-                })
-                .collect::<Result<Vec<(Vec<RistrettoPoint>, CodedPiece)>, String>>()?
-                .into_par_iter()
-                .unzip()
         };
 
-        let message = BroadcastCodedBlockMsg::new(block_id, coded_pieces, commitments, source_id);
-        let mut messages_per_neighbor: Vec<(usize, BroadcastCodedBlockMsg<Vec<RistrettoPoint>>)> =
-            Vec::new();
-        for &nbr in &self.neighbors {
-            messages_per_neighbor.push((nbr, message.clone()));
-        }
+        Ok(BroadcastCodedBlockMsg::new(
+            block_id,
+            coded_pieces,
+            commitments,
+            source_id,
+        ))
+        // let mut messages_per_neighbor: Vec<(usize, BroadcastCodedBlockMsg<Vec<RistrettoPoint>>)> =
+        //     Vec::new();
+        // for &nbr in &self.neighbors {
+        //     messages_per_neighbor.push((nbr, message.clone()));
+        // }
 
-        Ok(messages_per_neighbor)
+        // Ok(messages_per_neighbor)
     }
 
     /// TODO: for now, just use 'subcribe'. In real implementation, this function will subcribe to a topic.
@@ -240,7 +223,7 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
     pub fn subcribe(
         &mut self,
         msg: BroadcastCodedBlockMsg<Vec<RistrettoPoint>>,
-    ) -> Result<(), String> {
+    ) -> Result<(), RLNCError> {
         for (commitment, (id, coded_piece)) in msg
             .commitments
             .iter()
@@ -259,22 +242,24 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
             // verify each piece
             self.decoder
                 .verify_piece::<C, InMemoryStorage<C>>(self.committer, coded_piece, commitment)
-                .map_err(|e| format!("Commitment verification failed at index {}: {:?}", id, e))?;
+                .unwrap();
 
             // decode gradually instead of all at once (which is not practical)
-            let is_fully_decoded = self
+            let res = self
                 .decoder
-                .decode_shred(&mut self.storage, msg.block_id, id, coded_piece)
-                .map_err(|e| format!("Failed to decode shred {}: {}", id, e))?;
+                .decode_shred(&mut self.storage, msg.block_id, id, coded_piece);
 
-            if is_fully_decoded {
+            if !res.is_ok() {
+                return Err(res.err().unwrap());
+            }
+
+            let is_fully_decode = res.unwrap();
+            if is_fully_decode {
                 // store decoded shred
                 let raw_data = self
                     .decoder
                     .get_raw_from_decoded_shred(&self.storage, msg.block_id, id)
-                    .map_err(|e| {
-                        format!("Failed to get raw data from decoded shred {}: {}", id, e)
-                    })?;
+                    .unwrap();
                 self.storage.store_shred(msg.block_id, id, raw_data);
             }
         }
@@ -442,8 +427,7 @@ mod tests {
         assert!(!receiver.is_active_node(block_id));
         // Send and receive unique messages multiple times to ensure 4+ independent pieces
         for i in 0..num_chunks {
-            let messages = source.publish(block_id, 1).unwrap();
-            let message = messages[0].1.clone();
+            let message = source.publish(block_id, 1).unwrap();
 
             let result = receiver.subcribe(message);
             if let Err(e) = result {
@@ -473,9 +457,7 @@ mod tests {
         let mut receiver = Node::new(2, &committer, vec![1], k, num_chunks, 1);
 
         for (_, _) in (0..num_chunks).enumerate() {
-            let messages = source.publish(block_id, 1).unwrap();
-            assert_eq!(messages.len(), 1);
-            let message = messages[0].1.clone();
+            let message = source.publish(block_id, 1).unwrap();
             assert!(receiver.subcribe(message).is_ok());
         }
         assert!(receiver.is_active_node(block_id));
@@ -501,8 +483,7 @@ mod tests {
         let mut receiver = Node::new(2, &committer, vec![1], k, num_chunks, 1);
 
         for _ in 0..num_chunks {
-            let messages = source.publish(block_id, 1).unwrap();
-            let message = messages[0].1.clone();
+            let message = source.publish(block_id, 1).unwrap();
             assert!(receiver.subcribe(message).is_ok());
         }
 

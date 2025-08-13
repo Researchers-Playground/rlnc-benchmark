@@ -55,6 +55,8 @@ impl StorageDecoder {
                 .collect::<Vec<PieceIdx>>();
             storage.store_coded_piece(block_id, shred_id, piece_indices.len(), coded_piece.clone());
             storage.store_decoded(block_id, shred_id, decoder.clone());
+        } else {
+            return Err(res.err().unwrap());
         }
 
         Ok(decoder.is_already_decoded())

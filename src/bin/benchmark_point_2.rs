@@ -1,10 +1,12 @@
+use rayon::prelude::*;
 use rlnc_benchmark::commitments::ristretto::pedersen::PedersenCommitter;
 use rlnc_benchmark::networks::node::Node;
 use rlnc_benchmark::networks::storage::core::{BlockId, NodeStorage};
 use rlnc_benchmark::utils::blocks::create_random_block;
 use rlnc_benchmark::utils::bytes::bytes_to_human_readable;
 use rlnc_benchmark::utils::eds::{extended_data_share, FlatMatrix};
-use std::collections::HashMap;
+use rlnc_benchmark::utils::rlnc::RLNCError;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use sysinfo::System;
 
@@ -39,7 +41,7 @@ impl NetworkConfig {
 
 struct BenchmarkResult {
     time_ms: f64,
-    bandwidth_bytes: usize,
+    wasted_bandwidth: usize,
     round_trips: usize,
     cpu_usage: f32,
 }
@@ -105,7 +107,7 @@ fn simulate_network(
         .expect("Step 3: Failed to create source node (new_source)");
 
     // all shreds
-    let mut raw_extend_block = source_node.storage.list_shreds(block_id);
+    // let mut raw_extend_block = source_node.storage.list_shreds(block_id);
 
     nodes.insert(0, source_node);
 
@@ -122,68 +124,98 @@ fn simulate_network(
         nodes.insert(id, node);
     }
 
-    // 3) Setup neighbors (graph)
-    for id in 0..config.num_nodes {
-        let mut neighbors = Vec::new();
-        for i in 1..=config.degree {
-            let neighbor_id = (id + i) % config.num_nodes;
-            neighbors.push(neighbor_id);
-        }
-        println!("Step 4: Node {} neighbors: {:?}", id, neighbors);
+    // 3) Setup neighbors (graph) - parallel generation
+    let all_neighbors: Vec<(usize, Vec<usize>)> = (0..config.num_nodes)
+        .into_par_iter()
+        .map(|id| {
+            let mut neighbors = HashSet::new();
+            while neighbors.len() < config.degree && neighbors.len() < config.num_nodes - 1 {
+                let neighbor_id = rand::random::<u64>() % (config.num_nodes as u64);
+                if neighbor_id as usize != id {
+                    neighbors.insert(neighbor_id as usize);
+                }
+            }
+            let neighbors_vec: Vec<usize> = neighbors.into_iter().collect();
+            println!("Step 4: Node {} neighbors: {:?}", id, neighbors_vec);
+            (id, neighbors_vec)
+        })
+        .collect();
+
+    // Apply neighbors to nodes
+    for (id, neighbors) in all_neighbors {
         if let Some(node) = nodes.get_mut(&id) {
             node.neighbors = neighbors;
         }
     }
 
+    println!(
+        "All nodes ids: {}",
+        nodes
+            .keys()
+            .map(|k| k.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     // Metrics + loop state
     let start = Instant::now();
     let mut round_count: usize = 0;
-    let mut bandwidth_bytes: usize = 0;
+    let mut wasted_bandwidth: usize = 0;
     let mut cpu_usages: Vec<f32> = Vec::new();
     let mut system = System::new_all();
 
-    // 5) Main rounds: run until all nodes have reconstructed the block
     loop {
-        // Check termination
-        let all_decoded = nodes.values().all(|n| n.is_active_node(block_id));
-        if all_decoded {
-            break;
-        }
-
         round_count += 1;
-        println!("Step 6: Starting round {}", round_count);
-
         system.refresh_cpu();
-        let cpu_usage = system.global_cpu_info().cpu_usage();
-        cpu_usages.push(cpu_usage);
+        cpu_usages.push(system.global_cpu_info().cpu_usage());
 
-        for _ in 0..config.aggressive {
-            for id in 0..config.num_nodes {
-                if let Some(node) = nodes.get(&id) {
-                    let neighbor_and_msgs = node.publish(block_id, id).unwrap();
+        for i in 0..config.num_nodes {
+            let mut neighbor_and_msgs = Vec::new();
 
-                    for (neighbor_id, msg) in neighbor_and_msgs {
-                        println!(
-                            "Step 7: Node {} sending message to neighbor {}",
-                            id, neighbor_id
-                        );
+            let source = nodes.get_mut(&i).expect("Node not found in map");
+            let neighbors_ids = source.neighbors.clone();
+            for neighbor_id in neighbors_ids {
+                if let Ok(message) = source.publish(block_id, source.id) {
+                    neighbor_and_msgs.push((neighbor_id, message));
+                }
+            }
 
-                        if let Some(neighbor) = nodes.get_mut(&neighbor_id) {
-                            neighbor.subcribe(msg).unwrap();
-                        } else {
-                            println!(
-                                "Step 7: Node {} tried to send to non-existent neighbor {}",
-                                id, neighbor_id
-                            );
+            if neighbor_and_msgs.is_empty() {
+                continue;
+            }
+
+            for (destination_id, msg) in neighbor_and_msgs {
+                if destination_id == i {
+                    continue;
+                }
+                if let Some(destination) = nodes.get_mut(&destination_id) {
+                    let sz = msg.coded_piece_size_in_bytes();
+                    match destination.subcribe(msg) {
+                        Ok(_) => {}
+                        Err(RLNCError::ReceivedAllPieces) | Err(RLNCError::PieceNotUseful) => {
+                            wasted_bandwidth += sz;
                         }
+                        Err(_) => {}
                     }
                 }
             }
         }
 
-        // Prevent infinite loop
-        if round_count > 10000 {
-            println!("Terminating after excessive rounds");
+        println!(
+            "Wasted Bandwidth: {}, Round trips: {}, Active nodes: {}",
+            bytes_to_human_readable(wasted_bandwidth),
+            round_count,
+            nodes
+                .values()
+                .filter(|n| n.is_active_node(block_id))
+                .count()
+        );
+
+        if nodes.values().all(|n| n.is_active_node(block_id)) {
+            break;
+        }
+
+        if round_count > 200 {
             break;
         }
     }
@@ -197,7 +229,7 @@ fn simulate_network(
 
     BenchmarkResult {
         time_ms: duration.as_secs_f64() * 1000.0,
-        bandwidth_bytes,
+        wasted_bandwidth,
         round_trips: round_count,
         cpu_usage: avg_cpu_usage,
     }
@@ -207,8 +239,8 @@ fn main() {
     let block_size = 2 * 1024 * 1024; // 16KB = 16384 bytes
     let share_size = 512; // share size
     let num_chunks = 16;
-    let num_nodes = 2;
-    let degree = 1;
+    let num_nodes = 100;
+    let degree = 12;
     let aggressive = 1; // TODO: currently only do with aggressive = 1
 
     if block_size % share_size != 0 {
@@ -271,10 +303,10 @@ fn main() {
         config.custody_size
     );
     println!(
-        "Time: {:.2} ms, Bandwidth: {} ({} bytes), Round trips: {}, Avg CPU Usage: {:.2}%",
+        "Time: {:.2} ms, Wasted Bandwidth: {} ({} bytes), Round trips: {}, Avg CPU Usage: {:.2}%",
         result.time_ms,
-        bytes_to_human_readable(result.bandwidth_bytes),
-        result.bandwidth_bytes,
+        bytes_to_human_readable(result.wasted_bandwidth),
+        result.wasted_bandwidth,
         result.round_trips,
         result.cpu_usage
     );

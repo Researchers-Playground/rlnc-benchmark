@@ -13,6 +13,11 @@ impl<S> CodedPiece<S> {
     pub fn get_data_len(&self) -> usize {
         self.data.len()
     }
+
+    pub fn size_in_bytes(&self) -> usize {
+        self.data.len() * std::mem::size_of::<S>()
+            + self.coefficients.len() * std::mem::size_of::<S>()
+    }
 }
 
 pub trait Committer: Clone + Send + Sync {

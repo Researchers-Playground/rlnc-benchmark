@@ -38,7 +38,7 @@ fn main() {
     );
 
     // <BEGIN: RLNC configuration>
-    let num_shreds: usize = k;
+    let num_shreds: usize = k * k;
     let num_chunks = 16;
     let shreds_size = (extended_matrix.data().len() as f64 / num_shreds as f64).ceil() as usize;
     let chunk_size = shreds_size / num_chunks;
@@ -78,13 +78,10 @@ fn main() {
         .map(|encoder| encoder.encode().unwrap())
         .collect::<Vec<_>>();
     let encode_time = encode_time.elapsed();
-    println!("📊 Encode time: {:?}", encode_time);
+    println!("📊 Time to create one coded block: {:?}", encode_time);
     println!(
-        "📊 Encoded chunks in byte: {}",
-        bytes_to_human_readable(
-            coded_block.len()
-                * (coded_block[0].coefficients.len() * 32 + coded_block[0].data.len())
-        )
+        "📊 Coded block size: {}",
+        bytes_to_human_readable(coded_block.len() * coded_block[0].size_in_bytes())
     );
 
     let commitments_time = Instant::now();
@@ -95,7 +92,7 @@ fn main() {
     let commitments_time = commitments_time.elapsed();
     println!("📊 Commitments time: {:?}", commitments_time);
     println!(
-        "📊 Commitments size: {}",
+        "📊 Commitments size each node has to store: {}",
         bytes_to_human_readable(shreds_commitments.len() * size_of::<RistrettoPoint>())
     );
     // <END: RLNC encoding + create commitment one block>
