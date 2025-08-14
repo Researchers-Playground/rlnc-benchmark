@@ -38,7 +38,7 @@ fn main() {
     );
 
     // <BEGIN: RLNC configuration>
-    let num_shreds: usize = k;
+    let num_shreds: usize = k * k;
     let num_chunks = 16;
     let shreds_size = (extended_matrix.data().len() as f64 / num_shreds as f64).ceil() as usize;
     let chunk_size = shreds_size / num_chunks;
@@ -47,19 +47,22 @@ fn main() {
     // <END: RLNC configuration>
 
     // <BEGIN: RLNC create commitment one block>
-    let shreds = extended_matrix.data().chunks(shreds_size).collect::<Vec<_>>();
+    let shreds = extended_matrix
+        .data()
+        .chunks(shreds_size)
+        .collect::<Vec<_>>();
     let shreds_commiters = shreds
-    .par_iter()
-    .map(|shred| {
-        let mut rng = StdRng::seed_from_u64(42);
-        let data_chunk: Vec<Vec<Scalar>> = shred
-        .chunks(chunk_size)
-        .map(|chunk| chunk_to_scalars(chunk).unwrap())
-        .collect();
-        let committer = DiscreteLogCommitter::new(&data_chunk, &mut rng).unwrap();
-        committer
-    })
-    .collect::<Vec<_>>();
+        .par_iter()
+        .map(|shred| {
+            let mut rng = StdRng::seed_from_u64(42);
+            let data_chunk: Vec<Vec<Scalar>> = shred
+                .chunks(chunk_size)
+                .map(|chunk| chunk_to_scalars(chunk).unwrap())
+                .collect();
+            let committer = DiscreteLogCommitter::new(&data_chunk, &mut rng).unwrap();
+            committer
+        })
+        .collect::<Vec<_>>();
     let shreds_encoders = shreds
         .par_iter()
         .zip(shreds_commiters.par_iter())
@@ -70,19 +73,15 @@ fn main() {
         .collect::<Vec<_>>();
     let encode_time = Instant::now();
 
-
     let coded_block = shreds_encoders
         .par_iter()
         .map(|encoder| encoder.encode().unwrap())
         .collect::<Vec<_>>();
     let encode_time = encode_time.elapsed();
-    println!("📊 Encode time: {:?}", encode_time);
+    println!("📊 Time to create one coded block: {:?}", encode_time);
     println!(
-        "📊 Encoded chunks in byte: {}",
-        bytes_to_human_readable(
-            coded_block.len()
-                * (coded_block[0].coefficients.len() * 32 + coded_block[0].data.len())
-        )
+        "📊 Coded block size: {}",
+        bytes_to_human_readable(coded_block.len() * coded_block[0].size_in_bytes())
     );
 
     let commitments_time = Instant::now();
@@ -93,10 +92,8 @@ fn main() {
     let commitments_time = commitments_time.elapsed();
     println!("📊 Commitments time: {:?}", commitments_time);
     println!(
-        "📊 Commitments size: {}",
-        bytes_to_human_readable(
-            shreds_commitments.len() * size_of::<RistrettoPoint>()
-        )
+        "📊 Commitments size each node has to store: {}",
+        bytes_to_human_readable(shreds_commitments.len() * size_of::<RistrettoPoint>())
     );
     // <END: RLNC encoding + create commitment one block>
 
@@ -107,7 +104,7 @@ fn main() {
         .zip(shreds_commitments.par_iter())
         .zip(shreds_commiters.par_iter())
         .map(|((packet, commitments), committer)| {
-            let decoder = NetworkDecoder::new(committer, num_chunks);
+            let decoder = NetworkDecoder::new(Some(committer), num_chunks);
             let result = decoder.verify_coded_piece(packet, &commitments);
             match result {
                 Ok(_) => true,

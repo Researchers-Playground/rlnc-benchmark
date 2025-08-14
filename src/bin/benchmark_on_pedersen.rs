@@ -12,9 +12,9 @@ const ONE_MEGABYTE: usize = 1024 * 1024;
 
 fn main() {
     const BLOCK_SIZE: usize = 2 * ONE_MEGABYTE; // 2MB như Celestia
-    const SHARE_SIZE: usize = 512; // 512 bytes
-    let k: usize = (BLOCK_SIZE / SHARE_SIZE).isqrt();
-    println!("Block will have size {}x{}", k, k);
+    const SHARE_SIZE: usize = 2048; // 512 bytes
+    let k: usize = (BLOCK_SIZE / SHARE_SIZE).isqrt(); // 4096 shares -> 64x64 matrix
+    println!("Block will have size {}x{}", k, k); // 64 * 64
 
     let block: Vec<u8> = create_random_block(BLOCK_SIZE);
 
@@ -36,7 +36,7 @@ fn main() {
     );
 
     // <BEGIN: RLNC configuration>
-    let num_shreds: usize = k;
+    let num_shreds: usize = k * k;
     let num_chunks = 16;
     let shreds_size = (extended_matrix.data().len() as f64 / num_shreds as f64).ceil() as usize;
     let chunk_size = shreds_size / num_chunks;
@@ -46,11 +46,15 @@ fn main() {
 
     // <BEGIN: RLNC create commitment one block>
     let committer = PedersenCommitter::new(chunk_size);
-    let shreds = extended_matrix.data().chunks(shreds_size).collect::<Vec<_>>();
+    let shreds = extended_matrix
+        .data()
+        .chunks(shreds_size)
+        .collect::<Vec<_>>();
     let shreds_encoders = shreds
         .iter()
         .map(|shred| {
-            let encoder = NetworkEncoder::new(&committer, Some(shred.to_vec()), num_chunks).unwrap();
+            let encoder =
+                NetworkEncoder::new(&committer, Some(shred.to_vec()), num_chunks).unwrap();
             encoder
         })
         .collect::<Vec<_>>();
@@ -60,9 +64,9 @@ fn main() {
         .map(|encoder| encoder.encode().unwrap())
         .collect::<Vec<_>>();
     let encode_time = encode_time.elapsed();
-    println!("📊 Encode time: {:?}", encode_time);
+    println!("📊 Time to create coded block: {:?}", encode_time);
     println!(
-        "📊 Encoded chunks in byte: {}",
+        "📊 Coded block size: {}",
         bytes_to_human_readable(
             coded_block.len()
                 * (coded_block[0].coefficients.len() * 32 + coded_block[0].data.len())
@@ -77,7 +81,7 @@ fn main() {
     let commitments_time = commitments_time.elapsed();
     println!("📊 Commitments time: {:?}", commitments_time);
     println!(
-        "📊 Commitments size: {}",
+        "📊 Commitments size each node has to store: {}",
         bytes_to_human_readable(
             shreds_commitments.len() * (shreds_commitments[0].len() * size_of::<RistrettoPoint>())
         )
@@ -90,7 +94,7 @@ fn main() {
         .par_iter()
         .zip(shreds_commitments.par_iter())
         .map(|(packet, commitments)| {
-            let decoder = NetworkDecoder::new(&committer, num_chunks);
+            let decoder = NetworkDecoder::new(Some(&committer), num_chunks);
             let result = decoder.verify_coded_piece(packet, &commitments);
             match result {
                 Ok(_) => true,

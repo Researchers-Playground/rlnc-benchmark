@@ -1,15 +1,21 @@
-use crate::commitments::{Committer, CodedPiece};
+use crate::commitments::{CodedPiece, Committer};
 use crate::utils::matrix::Echelon;
 use crate::utils::ristretto::{block_to_chunks, chunk_to_scalars};
 use curve25519_dalek::Scalar;
 use rand::Rng;
+use thiserror::Error;
 
-
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum RLNCError {
+    #[error("Linearly dependent chunk received")]
     PieceNotUseful,
+    #[error("Received all pieces")]
     ReceivedAllPieces,
+    #[error("Decoding not complete")]
     DecodingNotComplete,
+    #[error("Committer not set for verification")]
+    LackOfCommitter,
+    #[error("Invalid data: {0}")]
     InvalidData(String),
 }
 
@@ -77,7 +83,9 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkEncoder<'a, C> {
         if self.chunks.is_empty() {
             return Err("No chunks available for commitments".to_string());
         }
-        self.committer.commit(&self.chunks).map_err(|_| "Commitment failed".to_string())
+        self.committer
+            .commit(&self.chunks)
+            .map_err(|_| "Commitment failed".to_string())
     }
 
     pub fn get_chunks(&self) -> Vec<Vec<Scalar>> {
@@ -97,20 +105,38 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkEncoder<'a, C> {
     }
 }
 
+// TODO: use RREF to store only rref matrix for decoding
+#[derive(Clone)]
 pub struct NetworkDecoder<'a, C: Committer> {
-    received_chunks: Vec<Vec<C::Scalar>>,
+    pub received_chunks: Vec<Vec<C::Scalar>>,
     commitment: Option<C::Commitment>,
-    echelon: Echelon,
-    committer: &'a C,
-    piece_count: usize,
+    pub echelon: Echelon,
+    committer: Option<&'a C>,
+    pub piece_count: usize,
 }
 
 impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
-    pub fn new(committer: &'a C, piece_count: usize) -> Self {
+    pub fn new(committer: Option<&'a C>, piece_count: usize) -> Self {
         NetworkDecoder {
             received_chunks: Vec::new(),
             commitment: None,
             echelon: Echelon::new(piece_count),
+            committer,
+            piece_count,
+        }
+    }
+
+    pub fn from(
+        received_chunks: Vec<Vec<C::Scalar>>,
+        echelon: Echelon,
+        piece_count: usize,
+        commitment: Option<C::Commitment>,
+        committer: Option<&'a C>,
+    ) -> Self {
+        NetworkDecoder {
+            received_chunks,
+            commitment,
+            echelon,
             committer,
             piece_count,
         }
@@ -125,7 +151,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         self.commitment.clone()
     }
 
-    pub fn check_commitment(&self, commitment: &C::Commitment) -> Result<(), String> 
+    pub fn check_commitment(&self, commitment: &C::Commitment) -> Result<(), String>
     where
         C::Commitment: PartialEq + Clone,
     {
@@ -153,7 +179,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         &mut self,
         coded_piece: &CodedPiece<C::Scalar>,
         commitment: &C::Commitment,
-    ) -> Result<(), RLNCError> 
+    ) -> Result<(), RLNCError>
     where
         C::Commitment: Clone,
     {
@@ -180,7 +206,13 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         coded_piece: &CodedPiece<C::Scalar>,
         commitment: &C::Commitment,
     ) -> Result<(), RLNCError> {
-        let is_valid = self.committer.verify(Some(commitment), coded_piece);
+        if self.committer.is_none() {
+            return Err(RLNCError::LackOfCommitter);
+        }
+        let is_valid = self
+            .committer
+            .unwrap()
+            .verify(Some(commitment), coded_piece);
         if !is_valid {
             return Err(RLNCError::InvalidData(
                 "Commitment verification failed".to_string(),
@@ -254,7 +286,7 @@ impl<S: Clone> NetworkRecoder<S> {
         Ok(())
     }
 
-    pub fn recode(&self) -> CodedPiece<S> 
+    pub fn recode(&self) -> CodedPiece<S>
     where
         S: Copy + std::ops::Mul<Output = S> + std::iter::Sum + From<u8>,
     {
@@ -305,7 +337,9 @@ impl NetworkRecoder<Scalar> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{commitments::ristretto::pedersen::PedersenCommitter, utils::ristretto::random_u8_slice};
+    use crate::{
+        commitments::ristretto::pedersen::PedersenCommitter, utils::ristretto::random_u8_slice,
+    };
 
     use super::*;
 
@@ -338,7 +372,7 @@ mod tests {
 
         let encoder =
             NetworkEncoder::new(&committer, Some(original_data.clone()), num_chunks).unwrap();
-        let mut decoder = NetworkDecoder::new(&committer, num_chunks);
+        let mut decoder = NetworkDecoder::new(Some(&committer), num_chunks);
         let commitments = encoder.get_commitment().unwrap();
 
         while !decoder.is_already_decoded() {

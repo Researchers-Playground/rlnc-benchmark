@@ -15,6 +15,7 @@ We could in principle work with smaller integer matrices like u64 instead of Sca
 needs to be taken to prevent the integers to grow with the number of rows. Implementing something
 like Bareiss' seems overkill at this stage.
 */
+#[derive(Clone)]
 pub struct Echelon {
     coefficients: Vec<Vec<Scalar>>,
     echelon: Vec<Vec<Scalar>>,
