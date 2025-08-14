@@ -1,4 +1,7 @@
-use crate::commitments::{CodedPiece, Committer};
+use crate::{
+    commitments::{CodedPiece, Committer},
+    utils::ristretto::coefficients_to_scalars,
+};
 use curve25519_dalek::{
     constants::RISTRETTO_BASEPOINT_POINT,
     ristretto::RistrettoPoint,
@@ -237,7 +240,7 @@ impl DiscreteLogCommitter {
     /// This is the main verification function implementing: d = ∏h_i^{x_i * w_i} = 1
     pub fn verify_signature(&self, coded_piece: &CodedPiece<Scalar>) -> bool {
         // Combine coding coefficients and data into full vector w
-        let mut full_vector = coded_piece.coefficients.clone();
+        let mut full_vector = coefficients_to_scalars(&coded_piece.coefficients.clone());
         full_vector.extend(coded_piece.data.iter().cloned());
 
         if full_vector.len() != self.params.total_dim {
@@ -250,7 +253,7 @@ impl DiscreteLogCommitter {
             .signature_vector
             .iter()
             .zip(full_vector.iter())
-            .map(|(&x_i, &w_i)| x_i * w_i)
+            .map(|(&x_i, &w_i)| x_i * Scalar::from(w_i))
             .collect();
 
         let result = RistrettoPoint::multiscalar_mul(&exponents, &self.generators);
@@ -325,8 +328,8 @@ mod tests {
 
         // Test original packets with implicit identity structure
         for (i, data_chunk) in data_chunks.iter().enumerate() {
-            let mut coding_vector = vec![Scalar::ZERO; num_packets];
-            coding_vector[i] = Scalar::ONE; // Identity part for this packet
+            let mut coding_vector = vec![0; num_packets];
+            coding_vector[i] = 1; // Identity part for this packet
 
             let coded_piece = CodedPiece {
                 coefficients: coding_vector,
@@ -376,7 +379,7 @@ mod tests {
         // (There's a negligible chance it might pass due to randomness)
         let mut failed_count = 0;
         for _ in 0..10 {
-            let test_coefficients = vec![Scalar::from(rng.random::<u64>()); num_packets];
+            let test_coefficients = vec![rng.random::<u8>(); num_packets];
             let test_data = vec![Scalar::from(rng.random::<u64>()); data_per_packet];
             let test_piece = CodedPiece {
                 coefficients: test_coefficients,

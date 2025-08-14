@@ -1,5 +1,9 @@
-use curve25519_dalek::scalar::Scalar;
+use curve25519_dalek::Scalar;
 use rand::Rng;
+
+pub fn coefficients_to_scalars(coefficients: &[u8]) -> Vec<Scalar> {
+    coefficients.iter().map(|&x| Scalar::from(x)).collect()
+}
 
 pub fn chunk_to_scalars(chunk: &[u8]) -> Result<Vec<Scalar>, String> {
     if chunk.len() % 32 != 0 {

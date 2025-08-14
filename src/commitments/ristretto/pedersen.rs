@@ -1,4 +1,5 @@
 use crate::commitments::{CodedPiece, Committer};
+use crate::utils::ristretto::coefficients_to_scalars;
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
@@ -66,7 +67,10 @@ impl Committer for PedersenCommitter {
         if commitment.is_none() {
             return false;
         }
-        let msm = RistrettoPoint::multiscalar_mul(&piece.coefficients, commitment.unwrap());
+        let msm = RistrettoPoint::multiscalar_mul(
+            coefficients_to_scalars(&piece.coefficients),
+            commitment.unwrap(),
+        );
         match self.commit(&piece.data) {
             Ok(commitment_result) => msm == commitment_result,
             Err(_) => false,

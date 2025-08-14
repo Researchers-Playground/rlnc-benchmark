@@ -12,7 +12,7 @@ const ONE_MEGABYTE: usize = 1024 * 1024;
 
 fn main() {
     const BLOCK_SIZE: usize = 2 * ONE_MEGABYTE; // 2MB như Celestia
-    const SHARE_SIZE: usize = 2048; // 512 bytes
+    const SHARE_SIZE: usize = 512; // 512 bytes
     let k: usize = (BLOCK_SIZE / SHARE_SIZE).isqrt(); // 4096 shares -> 64x64 matrix
     println!("Block will have size {}x{}", k, k); // 64 * 64
 
@@ -36,7 +36,7 @@ fn main() {
     );
 
     // <BEGIN: RLNC configuration>
-    let num_shreds: usize = k * k;
+    let num_shreds: usize = 4 * k * k;
     let num_chunks = 16;
     let shreds_size = (extended_matrix.data().len() as f64 / num_shreds as f64).ceil() as usize;
     let chunk_size = shreds_size / num_chunks;
@@ -67,10 +67,7 @@ fn main() {
     println!("📊 Time to create coded block: {:?}", encode_time);
     println!(
         "📊 Coded block size: {}",
-        bytes_to_human_readable(
-            coded_block.len()
-                * (coded_block[0].coefficients.len() * 32 + coded_block[0].data.len())
-        )
+        bytes_to_human_readable(coded_block.len() * (coded_block[0].size_in_bytes()))
     );
 
     let commitments_time = Instant::now();

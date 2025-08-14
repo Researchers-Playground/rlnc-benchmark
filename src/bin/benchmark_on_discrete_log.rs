@@ -13,7 +13,7 @@ use rlnc_benchmark::utils::rlnc::{NetworkDecoder, NetworkEncoder};
 const ONE_MEGABYTE: usize = 1024 * 1024;
 
 fn main() {
-    const BLOCK_SIZE: usize = 2 * ONE_MEGABYTE; // 2MB như Celestia
+    const BLOCK_SIZE: usize = 2 * ONE_MEGABYTE / 4; // 2MB như Celestia
     const SHARE_SIZE: usize = 512; // 512 bytes
     let k: usize = (BLOCK_SIZE / SHARE_SIZE).isqrt();
     println!("Block will have size {}x{}", k, k);
@@ -38,10 +38,11 @@ fn main() {
     );
 
     // <BEGIN: RLNC configuration>
-    let num_shreds: usize = k * k;
-    let num_chunks = 16;
-    let shreds_size = (extended_matrix.data().len() as f64 / num_shreds as f64).ceil() as usize;
-    let chunk_size = shreds_size / num_chunks;
+    let num_shreds: usize = 4 * k * k;
+    let num_chunks: usize = 16;
+    let shreds_size: usize =
+        (extended_matrix.data().len() as f64 / num_shreds as f64).ceil() as usize;
+    let chunk_size: usize = shreds_size / num_chunks;
     println!("Shreds size: {}", bytes_to_human_readable(shreds_size));
     println!("Chunk size: {}", bytes_to_human_readable(chunk_size));
     // <END: RLNC configuration>
@@ -80,8 +81,10 @@ fn main() {
     let encode_time = encode_time.elapsed();
     println!("📊 Time to create one coded block: {:?}", encode_time);
     println!(
-        "📊 Coded block size: {}",
-        bytes_to_human_readable(coded_block.len() * coded_block[0].size_in_bytes())
+        "📊 Coded block size: {}, Piece len: {}, Coded piece size: {}",
+        bytes_to_human_readable(coded_block.len() * coded_block[0].size_in_bytes()),
+        bytes_to_human_readable(coded_block.len()),
+        bytes_to_human_readable(coded_block[0].size_in_bytes())
     );
 
     let commitments_time = Instant::now();

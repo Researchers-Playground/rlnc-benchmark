@@ -1,6 +1,6 @@
 use crate::commitments::{CodedPiece, Committer};
 use crate::utils::matrix::Echelon;
-use crate::utils::ristretto::{block_to_chunks, chunk_to_scalars};
+use crate::utils::ristretto::{block_to_chunks, chunk_to_scalars, coefficients_to_scalars};
 use curve25519_dalek::Scalar;
 use rand::Rng;
 use thiserror::Error;
@@ -19,12 +19,12 @@ pub enum RLNCError {
     InvalidData(String),
 }
 
-fn generate_random_coefficients(length: usize) -> Vec<Scalar> {
+fn generate_random_coefficients(length: usize) -> Vec<u8> {
     let mut rng = rand::rng();
     (0..length)
         .map(|_| {
             let random_byte = rng.random::<u8>();
-            Scalar::from(random_byte)
+            random_byte
         })
         .collect()
 }
@@ -63,7 +63,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkEncoder<'a, C> {
             return Err("No chunks available for encoding".to_string());
         }
         let coefficients = generate_random_coefficients(self.chunks.len());
-        let data = self.linear_combination(&coefficients);
+        let data = self.linear_combination(&coefficients_to_scalars(&coefficients));
         Ok(CodedPiece { data, coefficients })
     }
 
@@ -194,7 +194,10 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         if self.is_already_decoded() {
             return Err(RLNCError::ReceivedAllPieces);
         }
-        if !self.echelon.add_row(coded_piece.coefficients.clone()) {
+        if !self
+            .echelon
+            .add_row(coefficients_to_scalars(&coded_piece.coefficients))
+        {
             return Err(RLNCError::PieceNotUseful);
         }
         self.received_chunks.push(coded_piece.data.clone());
@@ -256,7 +259,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
 
 pub struct NetworkRecoder<S = Scalar> {
     received_chunks: Vec<Vec<S>>,
-    received_coefficients: Vec<Vec<S>>,
+    received_coefficients: Vec<Vec<u8>>,
     piece_count: usize,
 }
 
@@ -294,10 +297,10 @@ impl<S: Clone> NetworkRecoder<S> {
             panic!("No packets to recode");
         }
 
-        let mixing_coeffs: Vec<S> = (0..self.received_chunks.len())
+        let mixing_coeffs: Vec<u8> = (0..self.received_chunks.len())
             .map(|_| {
                 let random_byte = rand::rng().random::<u8>();
-                S::from(random_byte)
+                random_byte
             })
             .collect();
 
@@ -306,7 +309,7 @@ impl<S: Clone> NetworkRecoder<S> {
                 mixing_coeffs
                     .iter()
                     .zip(&self.received_chunks)
-                    .map(|(coeff, chunk)| *coeff * chunk[i])
+                    .map(|(coeff, chunk)| S::from(*coeff) * chunk[i])
                     .sum()
             })
             .collect();

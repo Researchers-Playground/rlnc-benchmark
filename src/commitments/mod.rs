@@ -6,7 +6,7 @@ pub mod ristretto;
 #[derive(Clone, PartialEq, Debug)]
 pub struct CodedPiece<S = Scalar> {
     pub data: Vec<S>,
-    pub coefficients: Vec<S>,
+    pub coefficients: Vec<u8>,
 }
 
 impl<S> CodedPiece<S> {
@@ -15,8 +15,7 @@ impl<S> CodedPiece<S> {
     }
 
     pub fn size_in_bytes(&self) -> usize {
-        self.data.len() * std::mem::size_of::<S>()
-            + self.coefficients.len() * std::mem::size_of::<S>()
+        self.data.len() * std::mem::size_of::<S>() + self.coefficients.len()
     }
 }
 
