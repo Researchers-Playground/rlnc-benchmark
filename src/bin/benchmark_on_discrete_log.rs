@@ -1,6 +1,6 @@
-use curve25519_dalek::{RistrettoPoint, Scalar};
-use rand::{rngs::StdRng, SeedableRng};
+use curve25519_dalek::Scalar;
 use rlnc_benchmark::commitments::ristretto::discrete_log::DiscreteLogCommitter;
+use rlnc_benchmark::commitments::Committer;
 use rlnc_benchmark::utils::bytes::bytes_to_human_readable;
 use rlnc_benchmark::utils::ristretto::chunk_to_scalars;
 use std::time::Instant;
@@ -57,23 +57,28 @@ fn main() {
     let shreds_commiters = shreds
         .par_iter()
         .map(|shred| {
-            let mut rng = StdRng::seed_from_u64(42);
             let data_chunk: Vec<Vec<Scalar>> = shred
                 .chunks(chunk_size)
                 .map(|chunk| chunk_to_scalars(chunk).unwrap())
                 .collect();
-            let committer = DiscreteLogCommitter::new(&data_chunk, &mut rng).unwrap();
+            let mut committer =
+                DiscreteLogCommitter::new(data_chunk.len(), data_chunk[0].len()).unwrap();
+
+            // Generate commitment (generators and signature_vector) from the data chunks
+            let signature_vector = committer.commit(&data_chunk).unwrap();
+
+            // Set the generated keys in the committer
+            committer
+                .set_signature_vector(signature_vector.clone())
+                .unwrap();
+
             committer
         })
         .collect::<Vec<_>>();
     let commitments_time = commitments_time.elapsed();
     println!("📊 Commitments time: {:?}", commitments_time);
-    println!(
-        "📊 Commitments size each node has to store: {}",
-        bytes_to_human_readable(shreds.len() * shreds_commiters[0].signature_vector().len() * 32)
-    );
 
-    let shreds_encoders = shreds
+    let mut shreds_encoders = shreds
         .par_iter()
         .zip(shreds_commiters.par_iter())
         .map(|(shred, commiter)| {
@@ -98,8 +103,18 @@ fn main() {
 
     let shreds_commitments = shreds_encoders
         .par_iter()
-        .map(|encoder| encoder.get_commitment().unwrap())
+        .map(|encoder| {
+            let signature_vector = encoder.get_commitment().unwrap();
+            signature_vector
+        })
         .collect::<Vec<_>>();
+    println!(
+        "📊 Commitment size: {}",
+        bytes_to_human_readable(
+            shreds_commitments[0].len() * shreds_commitments.len() * std::mem::size_of::<Scalar>()
+        )
+    );
+
     // <END: RLNC encoding + create commitment one block>
 
     // <BEGIN: RLNC verify>
@@ -110,7 +125,7 @@ fn main() {
         .zip(shreds_commiters.par_iter())
         .map(|((packet, commitments), committer)| {
             let decoder = NetworkDecoder::new(Some(committer), num_chunks);
-            let result = decoder.verify_coded_piece(packet, &commitments);
+            let result = decoder.verify_coded_piece(packet, commitments);
             match result {
                 Ok(_) => true,
                 Err(_) => false,

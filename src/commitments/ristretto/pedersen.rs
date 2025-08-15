@@ -92,8 +92,8 @@ mod tests {
 
     #[test]
     fn test_pedersen_commit() {
-        let committer = PedersenCommitter::new(4); // 4 generators
-                                                   // Valid chunk: 32 bytes (1 Scalar)
+        let mut committer = PedersenCommitter::new(4); // 4 generators
+                                                       // Valid chunk: 32 bytes (1 Scalar)
         let chunk = vec![1u8; 32];
         let scalars = chunk_to_scalars(&chunk).expect("Failed to convert chunk to scalars");
         let commitment = committer.commit(&scalars).expect("Failed to commit");

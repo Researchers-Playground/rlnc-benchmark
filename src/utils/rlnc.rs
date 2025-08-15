@@ -31,7 +31,7 @@ fn generate_random_coefficients(length: usize) -> Vec<u8> {
 
 pub struct NetworkEncoder<'a, C: Committer> {
     chunks: Vec<Vec<C::Scalar>>,
-    committer: &'a C,
+    pub committer: &'a C,
 }
 
 impl<'a, C: Committer<Scalar = Scalar>> NetworkEncoder<'a, C> {

@@ -19,14 +19,13 @@ fn main() {
     let block: Vec<u8> = create_random_block(BLOCK_SIZE);
 
     let pedersen = PedersenCommitter::new(chunk_size);
-
     let data_chunk: Vec<Vec<Scalar>> = block
         .chunks(chunk_size)
         .map(|chunk| chunk_to_scalars(chunk).unwrap())
         .collect();
-    let mut rng = StdRng::seed_from_u64(42);
     let rs_start = Instant::now();
-    let discrete_log = DiscreteLogCommitter::new(&data_chunk, &mut rng).unwrap();
+    let discrete_log = DiscreteLogCommitter::new(data_chunk.len(), data_chunk[0].len()).unwrap();
+    let _ = discrete_log.commit(&data_chunk).unwrap();
     let rs_time = rs_start.elapsed();
     println!(
         "📊 Discrete Log time for committing one block: {:?}",

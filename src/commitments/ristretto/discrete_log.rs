@@ -51,35 +51,44 @@ impl DiscreteLogParams {
 
 #[derive(Clone)]
 pub struct DiscreteLogCommitter {
+    alphas: Vec<Scalar>,
     generators: Vec<RistrettoPoint>,
     signature_vector: Vec<Scalar>,
     params: DiscreteLogParams,
 }
 
 impl DiscreteLogCommitter {
-    pub fn new<R: RngCore + CryptoRng>(
-        original_packets: &[Vec<Scalar>],
-        rng: &mut R,
+    pub fn new(
+        total_packets: usize,
+        total_data_in_single_packet: usize,
     ) -> Result<Self, DiscreteLogError> {
-        if original_packets.is_empty() {
-            return Err(DiscreteLogError::InvalidDimensions {
-                expected: 1,
-                actual: original_packets.len(),
-            });
+        let rng = &mut rand::rng();
+        let params = DiscreteLogParams::new(total_packets, total_data_in_single_packet);
+        let mut alphas: Vec<Scalar> = Vec::new();
+        for _ in 0..params.total_dim {
+            loop {
+                let alpha = Scalar::from(rng.random::<u64>());
+                if alpha != Scalar::ZERO {
+                    alphas.push(alpha);
+                    break;
+                }
+            }
         }
-        let data_dim = original_packets[0].len();
-        let params = DiscreteLogParams::new(original_packets.len(), data_dim);
-        let (generators, signature_vector) = Self::generate_keys(&params, original_packets, rng)?;
-
+        let generators: Vec<RistrettoPoint> = alphas
+            .iter()
+            .map(|&alpha| RISTRETTO_BASEPOINT_POINT * alpha)
+            .collect();
         Ok(Self {
+            alphas,
             generators,
-            signature_vector,
+            signature_vector: Vec::new(),
             params,
         })
     }
 
     pub fn from_keys(
         params: DiscreteLogParams,
+        alphas: Vec<Scalar>,
         generators: Vec<RistrettoPoint>,
         signature_vector: Vec<Scalar>,
     ) -> Result<Self, DiscreteLogError> {
@@ -98,6 +107,7 @@ impl DiscreteLogCommitter {
         }
 
         Ok(Self {
+            alphas,
             generators,
             signature_vector,
             params,
@@ -105,10 +115,11 @@ impl DiscreteLogCommitter {
     }
 
     fn generate_keys<R: RngCore + CryptoRng>(
+        &self,
         params: &DiscreteLogParams,
         original_packets: &[Vec<Scalar>],
         rng: &mut R,
-    ) -> Result<(Vec<RistrettoPoint>, Vec<Scalar>), DiscreteLogError> {
+    ) -> Result<Vec<Scalar>, DiscreteLogError> {
         if original_packets.len() != params.original_dim {
             return Err(DiscreteLogError::InvalidDimensions {
                 expected: params.original_dim,
@@ -123,29 +134,15 @@ impl DiscreteLogCommitter {
                 });
             }
         }
-        let mut alphas: Vec<Scalar> = Vec::new();
-        for _ in 0..params.total_dim {
-            loop {
-                let alpha = Scalar::from(rng.random::<u64>());
-                if alpha != Scalar::ZERO {
-                    alphas.push(alpha);
-                    break;
-                }
-            }
-        }
-        let generators: Vec<RistrettoPoint> = alphas
-            .iter()
-            .map(|&alpha| RISTRETTO_BASEPOINT_POINT * alpha)
-            .collect();
         let orthogonal_vector =
             Self::find_orthogonal_vector_implicit(params, original_packets, rng)?;
         let mut signature_vector: Vec<Scalar> = Vec::new();
-        for (&u_i, &alpha_i) in orthogonal_vector.iter().zip(alphas.iter()) {
+        for (&u_i, &alpha_i) in orthogonal_vector.iter().zip(self.alphas.iter()) {
             let alpha_inv = alpha_i.invert();
             signature_vector.push(u_i * alpha_inv);
         }
 
-        Ok((generators, signature_vector))
+        Ok(signature_vector)
     }
 
     /// Find orthogonal vector for implicit [I|D] structure without constructing full packets
@@ -259,18 +256,25 @@ impl DiscreteLogCommitter {
         let result = RistrettoPoint::multiscalar_mul(&exponents, &self.generators);
         result == RistrettoPoint::identity()
     }
+
+    pub fn set_signature_vector(
+        &mut self,
+        signature_vector: Vec<Scalar>,
+    ) -> Result<(), DiscreteLogError> {
+        self.signature_vector = signature_vector;
+        Ok(())
+    }
 }
 
 impl Committer for DiscreteLogCommitter {
     type Scalar = Scalar;
-    type Commitment = Vec<RistrettoPoint>;
+    type Commitment = Vec<Scalar>;
     type Error = DiscreteLogError;
 
     fn commit(&self, chunks: &Vec<Vec<Self::Scalar>>) -> Result<Self::Commitment, Self::Error> {
-        chunks
-            .iter()
-            .map(|chunk| self.commit_vector(chunk))
-            .collect()
+        let rng = &mut rand::rng();
+        let signature_vector = self.generate_keys(&self.params, chunks, rng)?;
+        Ok(signature_vector)
     }
 
     fn verify(&self, _params: Option<&Self::Commitment>, piece: &CodedPiece<Scalar>) -> bool {
@@ -308,13 +312,12 @@ mod tests {
             .chunks(data_per_packet * 32)
             .map(|chunk| chunk_to_scalars(chunk).unwrap())
             .collect();
-        let committer = DiscreteLogCommitter::new(&data_chunks, &mut rng);
+        let committer = DiscreteLogCommitter::new(data_chunks.len(), data_chunks[0].len());
         assert!(committer.is_ok());
     }
 
     #[test]
     fn test_commit_and_verify() {
-        let mut rng = StdRng::seed_from_u64(42);
         let num_packets = 2;
         let data_per_packet = 3;
         // Create real data for D part
@@ -324,8 +327,10 @@ mod tests {
             .map(|chunk| chunk_to_scalars(chunk).unwrap())
             .collect();
 
-        let committer = DiscreteLogCommitter::new(&data_chunks, &mut rng).unwrap();
-
+        let mut committer =
+            DiscreteLogCommitter::new(data_chunks.len(), data_chunks[0].len()).unwrap();
+        let signature_vector = committer.commit(&data_chunks).unwrap();
+        committer.set_signature_vector(signature_vector).unwrap();
         // Test original packets with implicit identity structure
         for (i, data_chunk) in data_chunks.iter().enumerate() {
             let mut coding_vector = vec![0; num_packets];
@@ -350,7 +355,10 @@ mod tests {
             .map(|chunk| chunk_to_scalars(chunk).unwrap())
             .collect();
 
-        let committer = DiscreteLogCommitter::new(&data_chunks, &mut rng).unwrap();
+        let mut committer =
+            DiscreteLogCommitter::new(data_chunks.len(), data_chunks[0].len()).unwrap();
+        let signature_vector = committer.commit(&data_chunks).unwrap();
+        committer.set_signature_vector(signature_vector).unwrap();
         let encoder = NetworkEncoder::new(&committer, Some(data), num_packets).unwrap();
         let coded_piece = encoder.encode().unwrap();
         let commitment = encoder.get_commitment().unwrap();
@@ -373,7 +381,10 @@ mod tests {
             .chunks(data_per_packet * 32)
             .map(|chunk| chunk_to_scalars(chunk).unwrap())
             .collect();
-        let committer = DiscreteLogCommitter::new(&data_chunks, &mut rng).unwrap();
+        let committer = DiscreteLogCommitter::new(data_chunks.len(), data_chunks[0].len()).unwrap();
+        let signature_vector = committer.commit(&data_chunks).unwrap();
+        let mut committer = committer;
+        committer.set_signature_vector(signature_vector).unwrap();
 
         // Should fail verification with very high probability
         // (There's a negligible chance it might pass due to randomness)
