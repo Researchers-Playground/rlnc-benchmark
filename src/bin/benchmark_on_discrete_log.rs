@@ -52,6 +52,8 @@ fn main() {
         .data()
         .chunks(shreds_size)
         .collect::<Vec<_>>();
+
+    let commitments_time = Instant::now();
     let shreds_commiters = shreds
         .par_iter()
         .map(|shred| {
@@ -64,6 +66,13 @@ fn main() {
             committer
         })
         .collect::<Vec<_>>();
+    let commitments_time = commitments_time.elapsed();
+    println!("📊 Commitments time: {:?}", commitments_time);
+    println!(
+        "📊 Commitments size each node has to store: {}",
+        bytes_to_human_readable(shreds.len() * shreds_commiters[0].signature_vector().len() * 32)
+    );
+
     let shreds_encoders = shreds
         .par_iter()
         .zip(shreds_commiters.par_iter())
@@ -87,17 +96,10 @@ fn main() {
         bytes_to_human_readable(coded_block[0].size_in_bytes())
     );
 
-    let commitments_time = Instant::now();
     let shreds_commitments = shreds_encoders
         .par_iter()
         .map(|encoder| encoder.get_commitment().unwrap())
         .collect::<Vec<_>>();
-    let commitments_time = commitments_time.elapsed();
-    println!("📊 Commitments time: {:?}", commitments_time);
-    println!(
-        "📊 Commitments size each node has to store: {}",
-        bytes_to_human_readable(shreds_commitments.len() * size_of::<RistrettoPoint>())
-    );
     // <END: RLNC encoding + create commitment one block>
 
     // <BEGIN: RLNC verify>
