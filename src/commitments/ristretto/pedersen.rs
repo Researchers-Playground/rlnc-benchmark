@@ -50,6 +50,7 @@ impl Committer for PedersenCommitter {
     type Scalar = Scalar;
     type Commitment = Vec<RistrettoPoint>;
     type Error = PedersenError;
+    type AdditionalData = ();
 
     fn commit(&self, chunks: &Vec<Vec<Self::Scalar>>) -> Result<Self::Commitment, Self::Error> {
         chunks
@@ -63,7 +64,12 @@ impl Committer for PedersenCommitter {
             .collect()
     }
 
-    fn verify(&self, commitment: Option<&Self::Commitment>, piece: &CodedPiece<Scalar>) -> bool {
+    fn verify(
+        &self,
+        commitment: Option<&Self::Commitment>,
+        piece: &CodedPiece<Scalar>,
+        _: Option<&Self::AdditionalData>,
+    ) -> bool {
         if commitment.is_none() {
             return false;
         }

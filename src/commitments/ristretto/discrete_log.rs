@@ -270,6 +270,7 @@ impl Committer for DiscreteLogCommitter {
     type Scalar = Scalar;
     type Commitment = Vec<Scalar>;
     type Error = DiscreteLogError;
+    type AdditionalData = ();
 
     fn commit(&self, chunks: &Vec<Vec<Self::Scalar>>) -> Result<Self::Commitment, Self::Error> {
         let rng = &mut rand::rng();
@@ -277,7 +278,12 @@ impl Committer for DiscreteLogCommitter {
         Ok(signature_vector)
     }
 
-    fn verify(&self, _params: Option<&Self::Commitment>, piece: &CodedPiece<Scalar>) -> bool {
+    fn verify(
+        &self,
+        _params: Option<&Self::Commitment>,
+        piece: &CodedPiece<Scalar>,
+        _: Option<&Self::AdditionalData>,
+    ) -> bool {
         // Primary verification using discrete log signature
         if !self.verify_signature(piece) {
             return false;
@@ -366,7 +372,7 @@ mod tests {
 
         let decoder = NetworkDecoder::new(Some(&committer), num_packets);
         let verify_result = decoder
-            .verify_coded_piece(&coded_piece, &commitment)
+            .verify_coded_piece(&coded_piece, &commitment, None)
             .is_ok();
         assert!(verify_result);
     }

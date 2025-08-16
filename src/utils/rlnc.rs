@@ -110,7 +110,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkEncoder<'a, C> {
 pub struct NetworkDecoder<'a, C: Committer> {
     pub received_chunks: Vec<Vec<C::Scalar>>,
     commitment: Option<C::Commitment>,
-    pub echelon: Echelon,
+    pub echelon: Echelon<C::Scalar>,
     committer: Option<&'a C>,
     pub piece_count: usize,
 }
@@ -128,7 +128,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
 
     pub fn from(
         received_chunks: Vec<Vec<C::Scalar>>,
-        echelon: Echelon,
+        echelon: Echelon<C::Scalar>,
         piece_count: usize,
         commitment: Option<C::Commitment>,
         committer: Option<&'a C>,
@@ -179,6 +179,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         &mut self,
         coded_piece: &CodedPiece<C::Scalar>,
         commitment: &C::Commitment,
+        additional: Option<&C::AdditionalData>,
     ) -> Result<(), RLNCError>
     where
         C::Commitment: Clone,
@@ -186,7 +187,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         if self.commitment.is_none() {
             self.commitment = Some(commitment.clone());
         }
-        self.verify_coded_piece(coded_piece, commitment)?;
+        self.verify_coded_piece(coded_piece, commitment, additional)?;
         self.direct_decode(coded_piece)
     }
 
@@ -208,6 +209,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         &self,
         coded_piece: &CodedPiece<C::Scalar>,
         commitment: &C::Commitment,
+        additional: Option<&C::AdditionalData>,
     ) -> Result<(), RLNCError> {
         if self.committer.is_none() {
             return Err(RLNCError::LackOfCommitter);
@@ -215,7 +217,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkDecoder<'a, C> {
         let is_valid = self
             .committer
             .unwrap()
-            .verify(Some(commitment), coded_piece);
+            .verify(Some(commitment), coded_piece, additional);
         if !is_valid {
             return Err(RLNCError::InvalidData(
                 "Commitment verification failed".to_string(),
@@ -380,7 +382,7 @@ mod tests {
 
         while !decoder.is_already_decoded() {
             let coded_piece = encoder.encode().unwrap();
-            decoder.decode(&coded_piece, &commitments).unwrap();
+            decoder.decode(&coded_piece, &commitments, None).unwrap();
         }
 
         let decoded_data = decoder.get_decoded_data().unwrap();

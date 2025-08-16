@@ -1,5 +1,21 @@
+use crate::utils::field::FieldScalar;
 use curve25519_dalek::Scalar;
 use rand::Rng;
+
+// Implementation for curve25519_dalek::Scalar
+impl FieldScalar for Scalar {
+    fn zero() -> Self {
+        Scalar::ZERO
+    }
+
+    fn one() -> Self {
+        Scalar::ONE
+    }
+
+    fn invert(self) -> Self {
+        Scalar::invert(&self)
+    }
+}
 
 pub fn coefficients_to_scalars(coefficients: &[u8]) -> Vec<Scalar> {
     coefficients.iter().map(|&x| Scalar::from(x)).collect()

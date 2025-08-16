@@ -92,7 +92,7 @@ fn main() {
         .zip(shreds_commitments.par_iter())
         .map(|(packet, commitments)| {
             let decoder = NetworkDecoder::new(Some(&committer), num_chunks);
-            let result = decoder.verify_coded_piece(packet, &commitments);
+            let result = decoder.verify_coded_piece(packet, &commitments, None);
             match result {
                 Ok(_) => true,
                 Err(_) => false,

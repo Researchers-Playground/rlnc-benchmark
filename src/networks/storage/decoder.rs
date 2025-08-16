@@ -21,8 +21,9 @@ impl StorageDecoder {
         committer: &C,
         piece: &CodedPiece<Scalar>,
         commitment: &C::Commitment,
+        additional_data: Option<&C::AdditionalData>,
     ) -> Result<(), RLNCError> {
-        let ok = committer.verify(Some(commitment), piece);
+        let ok = committer.verify(Some(commitment), piece, additional_data);
         if !ok {
             return Err(RLNCError::InvalidData(
                 "Commitment verification failed".to_string(),

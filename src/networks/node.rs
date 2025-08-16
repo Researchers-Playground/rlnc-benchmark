@@ -241,7 +241,12 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
 
             // verify each piece
             self.decoder
-                .verify_piece::<C, InMemoryStorage<C>>(self.committer, coded_piece, commitment)
+                .verify_piece::<C, InMemoryStorage<C>>(
+                    self.committer,
+                    coded_piece,
+                    commitment,
+                    None,
+                )
                 .unwrap();
 
             // decode gradually instead of all at once (which is not practical)
@@ -323,6 +328,7 @@ mod tests {
         type Scalar = Scalar;
         type Commitment = Vec<RistrettoPoint>;
         type Error = MockError;
+        type AdditionalData = ();
 
         fn commit(&self, chunks: &Vec<Vec<Scalar>>) -> Result<Self::Commitment, Self::Error> {
             let mut commitment = vec![];
@@ -339,7 +345,8 @@ mod tests {
         fn verify(
             &self,
             _commitment: Option<&Self::Commitment>,
-            _piece: &CodedPiece<Scalar>,
+            _piece: &CodedPiece<Self::Scalar>,
+            _additional_data: Option<&Self::AdditionalData>,
         ) -> bool {
             true
         }
