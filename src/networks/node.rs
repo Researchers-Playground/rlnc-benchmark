@@ -198,7 +198,7 @@ impl<'a, C: Committer<Scalar = Scalar, Commitment = Vec<RistrettoPoint>>> Node<'
 
                     Ok((commitment, coded_piece))
                 })
-                .collect::<Result<Vec<(Vec<RistrettoPoint>, CodedPiece)>, String>>()?
+                .collect::<Result<Vec<(Vec<RistrettoPoint>, CodedPiece<Scalar>)>, String>>()?
                 .into_par_iter()
                 .unzip()
         };

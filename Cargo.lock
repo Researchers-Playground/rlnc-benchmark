@@ -243,7 +243,7 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 [[package]]
 name = "kzg_rust"
 version = "0.1.0"
-source = "git+https://github.com/pawanjay176/kzg_rust.git#297a43952fbc32b5549e5e1b10ebba3403282f69"
+source = "git+https://github.com/perfogic/kzg-multi-point.git#b45e7f79fefc38731b5625970fcf2974586f3549"
 dependencies = [
  "blst",
  "hex",
@@ -450,6 +450,7 @@ dependencies = [
  "curve25519-dalek",
  "hex",
  "kzg_rust",
+ "once_cell",
  "rand",
  "rayon",
  "reed-solomon-erasure",

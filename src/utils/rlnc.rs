@@ -58,7 +58,7 @@ impl<'a, C: Committer<Scalar = Scalar>> NetworkEncoder<'a, C> {
         Ok(())
     }
 
-    pub fn encode(&self) -> Result<CodedPiece, String> {
+    pub fn encode(&self) -> Result<CodedPiece<Scalar>, String> {
         if self.chunks.is_empty() {
             return Err("No chunks available for encoding".to_string());
         }
@@ -335,7 +335,7 @@ impl<S: Clone> NetworkRecoder<S> {
 }
 
 impl NetworkRecoder<Scalar> {
-    pub fn new_scalar(coded_pieces: Vec<CodedPiece>, piece_count: usize) -> Self {
+    pub fn new_scalar(coded_pieces: Vec<CodedPiece<Scalar>>, piece_count: usize) -> Self {
         Self::new(coded_pieces, piece_count)
     }
 }

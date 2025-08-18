@@ -1,4 +1,3 @@
-use curve25519_dalek::scalar::Scalar;
 use std::error::Error;
 
 use crate::utils::field::FieldScalar;
@@ -7,7 +6,7 @@ pub mod blst;
 pub mod ristretto;
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct CodedPiece<S = Scalar> {
+pub struct CodedPiece<S> {
     pub data: Vec<S>,
     pub coefficients: Vec<u8>,
 }
@@ -28,7 +27,7 @@ pub trait Committer: Clone + Send + Sync {
     type Error: Error;
     type AdditionalData;
 
-    fn commit(&self, chunks: &Vec<Vec<Scalar>>) -> Result<Self::Commitment, Self::Error>;
+    fn commit(&self, chunks: &Vec<Vec<Self::Scalar>>) -> Result<Self::Commitment, Self::Error>;
     fn verify(
         &self,
         commitment: Option<&Self::Commitment>,

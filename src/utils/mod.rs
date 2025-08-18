@@ -1,4 +1,5 @@
 pub mod blocks;
+pub mod blst;
 pub mod bytes;
 pub mod eds;
 pub mod field;
