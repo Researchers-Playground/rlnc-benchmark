@@ -1019,6 +1019,13 @@ mod tests {
         let coded_commitment = msm_g1(&commitments_by_chunk[chunk_idx], &alphas).unwrap();
         let dt_msm = t1.elapsed();
         println!("✓ Computed coded commitment C* via MSM in {:?}", dt_msm);
+        let computed_coded_commitment = committer.commit_polynomial(&coded_polynomial).unwrap();
+        assert_eq!(
+            coded_commitment.as_ref(),
+            computed_coded_commitment.as_ref(),
+            "C* from MSM must match C* from direct commit"
+        );
+        println!("✓ Verified C* from MSM matches direct commitment");
 
         // 7) Choose evaluation points for batch proof at roots of unity (domain points)
         // For row=0 we use indices j=0 and j=1 (two field elements per 64-byte chunk)
