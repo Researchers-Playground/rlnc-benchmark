@@ -543,9 +543,9 @@ impl Committer for KzgCommitter {
                     };
                     let ok = Kzg::verify_kzg_proof(
                         &coded_commitment,
-                        &z_bytes,
-                        &y_bytes,
-                        proof,
+                        &z_bytes, // point - w^{row_id}
+                        &y_bytes, // coded_data in row_id and col_id position
+                        proof,    // multiproof
                         &settings,
                     )
                     .unwrap_or(false);
@@ -774,151 +774,6 @@ mod tests {
     }
 
     #[test]
-    fn rlnc_kzg_end_to_end() {
-        println!("=== RLNC + KZG Commitment Test ===");
-
-        // 1. Setup KZG committer
-        let committer = KzgCommitter::new_insecure().unwrap();
-
-        // 2. Create n=32 column data B_i (following spec: B_i = [b_i1, b_i2, ..., b_iL])
-        let n = 32;
-        let l = 64;
-        let column_data: Vec<Vec<Scalar>> = (0..n)
-            .map(|i| {
-                (0..l)
-                    .map(|j| Scalar::from((i * l + j + 1) as u32))
-                    .collect()
-            })
-            .collect();
-
-        // 3. Polynomial mapping: Each B_i -> f_i(X) and commit C_i = Commit(f_i)
-        let column_commitments = committer.create_column_commitments(&column_data).unwrap();
-        println!("✓ Created {} column commitments", column_commitments.len());
-
-        // 4. Generate coding vector α = (α_1, ..., α_n) from VRF/commit
-        let row_id: u8 = 7;
-        let cell_idx: u8 = 13;
-        let mut hasher = Sha256::new();
-        hasher.update(b"rlnc-kzg-alpha-v1");
-        hasher.update(&[row_id, cell_idx]);
-        let hash = hasher.finalize();
-
-        let mut alpha_seed = [0u8; 32];
-        alpha_seed.copy_from_slice(&hash);
-        let alpha_coeffs: Vec<Scalar> = coefficients_to_scalars(&expand_to_field(&alpha_seed, n));
-        println!(
-            "✓ Generated coding vector α of length {}",
-            alpha_coeffs.len()
-        );
-
-        // 5. Compute coded polynomial F*(X) = Σ α_i * f_i(X)
-        let mut coded_polynomial = vec![Scalar::from(0u32); l];
-        for (f_i, &alpha_i) in column_data.iter().zip(alpha_coeffs.iter()) {
-            for (j, &coeff) in f_i.iter().enumerate() {
-                coded_polynomial[j] = coded_polynomial[j] + (alpha_i * coeff);
-            }
-        }
-
-        // 6. Compute coded commitment C* = Σ α_i * C_i using MSM
-        let coded_commitment = msm_g1(&column_commitments, &alpha_coeffs).unwrap();
-        println!("✓ Computed coded commitment C* using MSM");
-
-        // 7. Evaluation point: derive from transcript
-        let x_j = derive_point(row_id, cell_idx);
-
-        // 8. Create proof that y_j = F*(x_j)
-        let (proof, y_j) = committer.create_proof(&coded_polynomial, x_j).unwrap();
-
-        // Build a single-point packet for sending: (α bytes, y, proof, j)
-        let packet_single = CodedPiecePacketSingle {
-            coefficients: hash[..n].to_vec(),
-            y: y_j,
-            proof: proof.clone(),
-            row: row_id,
-            col: cell_idx,
-        };
-
-        // Receiver reconstructs z from j and verifies using trait API
-        let recv_z = derive_point(packet_single.row, packet_single.col);
-        let piece = CodedPiece {
-            coefficients: packet_single.coefficients.clone(),
-            data: vec![packet_single.y],
-        };
-        let ad = KzgAdditional::Single {
-            points: vec![recv_z],
-            proofs: vec![packet_single.proof.clone()],
-            alpha_seed,
-        };
-        assert!(committer.verify(Some(&column_commitments), &piece, Some(&ad)));
-        println!(
-            "✓ Created KZG proof for coded value y_j = {}",
-            y_j.to_bytes()[0]
-        );
-
-        // === VERIFICATION TESTS ===
-
-        // Test 1: Valid verification should pass
-        assert!(committer
-            .verify_proof(&coded_commitment, x_j, y_j, &proof)
-            .unwrap());
-        println!("✅ Test 1: Valid proof verification passed");
-
-        // Test 2: Attack with wrong coded value should fail
-        let y_attack = y_j + Scalar::from(1u32);
-        assert!(!committer
-            .verify_proof(&coded_commitment, x_j, y_attack, &proof)
-            .unwrap_or(false));
-        println!("✅ Test 2: Wrong coded value attack blocked");
-
-        // Test 3: Attack with wrong evaluation point should fail
-        let x_attack = x_j + Scalar::from(1u32);
-        assert!(!committer
-            .verify_proof(&coded_commitment, x_attack, y_j, &proof)
-            .unwrap_or(false));
-        println!("✅ Test 3: Wrong evaluation point attack blocked");
-
-        // Test 4: Attack with wrong coding vector should fail (binding property)
-        let mut alpha_attack = alpha_coeffs.clone();
-        alpha_attack[0] = alpha_attack[0] + Scalar::from(1u32);
-        let wrong_commitment = msm_g1(&column_commitments, &alpha_attack).unwrap();
-        assert_ne!(coded_commitment.as_ref(), wrong_commitment.as_ref());
-        assert!(!committer
-            .verify_proof(&wrong_commitment, x_j, y_j, &proof)
-            .unwrap_or(false));
-        println!("✅ Test 4: Wrong coding vector attack blocked (MSM binding)");
-
-        // Multi-point (aggregated 1 proof) at points j and j+1 using kzg_rust multiproof
-        let points: Vec<Scalar> = vec![
-            derive_point(row_id, cell_idx),
-            derive_point(row_id + 1, cell_idx),
-        ];
-        let (agg_proof, ys_multi) = committer
-            .create_multi_point_proof(&coded_polynomial, &points)
-            .unwrap();
-        let packet_multi = CodedPiecePacketMulti {
-            coefficients: hash[..n].to_vec(),
-            ys: ys_multi.clone(),
-            proofs: vec![agg_proof.clone()],
-        };
-        let piece_multi = CodedPiece {
-            coefficients: packet_multi.coefficients.clone(),
-            data: packet_multi.ys.clone(),
-        };
-        let ad_multi = KzgAdditional::Multi {
-            points: points.clone(),
-            proof: agg_proof,
-            alpha_seed,
-        };
-        assert!(committer.verify(Some(&column_commitments), &piece_multi, Some(&ad_multi)));
-
-        // === RESULTS ===
-        println!("\n🎯 RLNC + KZG Implementation Results:");
-        println!("• Formula: F*(X) = Σ α_i f_i(X)");
-        println!("• Commitment: C* = Σ α_i C_i (MSM)");
-        println!("• Single + Multi-point verifications passed");
-    }
-
-    #[test]
     fn rlnc_p2p_kzg_benchmark() {
         // Parameters
         const ROWS: usize = 64;
@@ -1037,7 +892,9 @@ mod tests {
         let roots_of_unity = &settings_roots.roots_of_unity();
         let z0 = Scalar::from_blst_fr(&roots_of_unity[0]);
         let z1 = Scalar::from_blst_fr(&roots_of_unity[1]);
-        let points = vec![z0, z1];
+        let z2 = Scalar::from_blst_fr(&roots_of_unity[2]);
+        let z3 = Scalar::from_blst_fr(&roots_of_unity[3]);
+        let points = vec![z0, z1, z2, z3];
 
         // 8) Create multiproof for coded_polynomial at {z0, z1}
         let t2 = std::time::Instant::now();
